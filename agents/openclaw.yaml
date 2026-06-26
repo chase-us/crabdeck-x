@@ -1,0 +1,41 @@
+id: openclaw-sovereign
+version: 2.0.0
+name: OpenClaw Desktop Node
+description: "Primary system agent — connects to CrabDeck Gateway and Bhive OS."
+
+team: crabdeck           # Member of Team CrabDeck
+
+gateway:
+  url: ws://localhost:8765
+  reconnect_interval_s: 10
+  heartbeat_interval_s: 10
+  client_id: openclaw
+
+orchestrator:
+  backend: crewai
+
+agents:
+  - id: openclaw_core
+    role: "Digital Employee / Interface"
+    skills: ["system_monitoring", "file_management", "process_execution"]
+    tools: ["powershell_executor", "blueprint_manager"]
+    gateway_events:
+      - TASK
+
+  - id: memory_logger
+    role: "Persistent Memory Agent"
+    goals: ["Log all high-level logic to C:\\Bhive\\logs\\memory_loops.log"]
+
+workflow:
+  steps:
+    - id: init_sync
+      agent: openclaw_core
+      action: "sync_with_bhive_store"
+    - id: start_heartbeat
+      agent: memory_logger
+      action: "begin_persistence_loop"
+    - id: gateway_connect
+      agent: openclaw_core
+      action: "connect_to_crabdeck_gateway"
+      params:
+        url: "ws://localhost:8765"
