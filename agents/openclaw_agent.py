@@ -197,7 +197,10 @@ async def run():
 
                     if mtype == "TASK":
                         payload = msg.get("payload", {})
-                        result  = handle_task(payload)
+                        # handle_task does blocking HTTP/Ollama/subprocess calls that can
+                        # run for tens of seconds — run it in a thread so it doesn't stall
+                        # the event loop (and with it, the heartbeat task) while it works.
+                        result  = await asyncio.to_thread(handle_task, payload)
                         await ws.send(json.dumps({
                             "type":    "TASK_RESULT",
                             "agent":   "openclaw",

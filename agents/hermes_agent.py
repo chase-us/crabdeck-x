@@ -98,7 +98,10 @@ async def run():
                         model   = payload.get("model", DEFAULT_MODEL) if isinstance(payload, dict) else DEFAULT_MODEL
 
                         print(f"[Hermes] PROMPT ({model}) → {prompt[:80]}…")
-                        reply = ollama_generate(prompt, model)
+                        # Run the blocking Ollama call in a thread so it doesn't stall
+                        # the event loop (and with it, the heartbeat task) for the
+                        # duration of generation — which can take up to 120s.
+                        reply = await asyncio.to_thread(ollama_generate, prompt, model)
                         print(f"[Hermes] RESPONSE → {reply[:80]}…")
 
                         await ws.send(json.dumps({
@@ -110,7 +113,9 @@ async def run():
                     elif mtype == "TOOL_REQUEST":
                         tool_name = msg.get("payload", {}).get("tool", "unknown")
                         print(f"[Hermes] TOOL_REQUEST — {tool_name}")
-                        result = ollama_generate(f"Tool call: {json.dumps(msg.get('payload', {}))}")
+                        result = await asyncio.to_thread(
+                            ollama_generate, f"Tool call: {json.dumps(msg.get('payload', {}))}"
+                        )
                         await ws.send(json.dumps({
                             "type":    "TOOL_RESULT",
                             "agent":   "hermes",
