@@ -1,8 +1,7 @@
 import { v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
-import { MutationCtx, query } from "./_generated/server";
+import { MutationCtx, mutation, query } from "./_generated/server";
 import { getCurrentUserOrNull } from "./lib/auth";
-import { mutation } from "./_generated/server";
 import { userValidator } from "./validators";
 
 export const me = query({
