@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import errno
-import socket
 from typing import Any
 
 
@@ -42,14 +41,6 @@ def classify_error(exc: BaseException, fallback: str | None = None) -> ErrorRepo
             detail=message,
         )
 
-    if isinstance(exc, ConnectionError) or isinstance(exc, socket.error):
-        return ErrorReport(
-            code="CONNECTION",
-            bottleneck="The remote service was unreachable or dropped the connection.",
-            fallback="Check the gateway URL, wait for a heartbeat, then retry.",
-            detail=message,
-        )
-
     if isinstance(exc, PermissionError):
         return ErrorReport(
             code="AUTH",
@@ -63,6 +54,14 @@ def classify_error(exc: BaseException, fallback: str | None = None) -> ErrorRepo
             code="NOT_FOUND",
             bottleneck="A required resource or key was not present.",
             fallback="Ask for the missing identifier instead of substituting a default.",
+            detail=message,
+        )
+
+    if isinstance(exc, ConnectionError):
+        return ErrorReport(
+            code="CONNECTION",
+            bottleneck="The remote service was unreachable or dropped the connection.",
+            fallback="Check the gateway URL, wait for a heartbeat, then retry.",
             detail=message,
         )
 
