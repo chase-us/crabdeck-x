@@ -18,6 +18,9 @@ import asyncio, json, os, time, sys
 import requests
 import websockets
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from offload import run_blocking
+
 GATEWAY_URL      = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN    = os.environ.get("GATEWAY_TOKEN")  # None in local/dev mode
 OLLAMA_URL       = os.environ.get("OLLAMA_URL", "http://localhost:11434")
@@ -76,7 +79,7 @@ async def run():
 
                 print("[Hermes] Connected to Gateway ✅")
 
-                models = ollama_models()
+                models = await run_blocking(ollama_models)
                 if models:
                     print(f"[Hermes] Ollama online — models: {', '.join(models)}")
                 else:
@@ -93,35 +96,9 @@ async def run():
                     mtype = msg.get("type")
 
                     if mtype == "PROMPT":
-                        payload = msg.get("payload", {})
-                        prompt  = payload.get("prompt", "") if isinstance(payload, dict) else str(payload)
-                        model   = payload.get("model", DEFAULT_MODEL) if isinstance(payload, dict) else DEFAULT_MODEL
-
-                        print(f"[Hermes] PROMPT ({model}) → {prompt[:80]}…")
-                        # Run the blocking Ollama call in a thread so it doesn't stall
-                        # the event loop (and with it, the heartbeat task) for the
-                        # duration of generation — which can take up to 120s.
-                        reply = await asyncio.to_thread(ollama_generate, prompt, model)
-                        print(f"[Hermes] RESPONSE → {reply[:80]}…")
-
-                        await ws.send(json.dumps({
-                            "type":    "HERMES_RESPONSE",
-                            "agent":   "hermes",
-                            "payload": reply,
-                        }))
-
+                        await dispatch_prompt(ws, msg)
                     elif mtype == "TOOL_REQUEST":
-                        tool_name = msg.get("payload", {}).get("tool", "unknown")
-                        print(f"[Hermes] TOOL_REQUEST — {tool_name}")
-                        result = await asyncio.to_thread(
-                            ollama_generate, f"Tool call: {json.dumps(msg.get('payload', {}))}"
-                        )
-                        await ws.send(json.dumps({
-                            "type":    "TOOL_RESULT",
-                            "agent":   "hermes",
-                            "payload": {"tool": tool_name, "result": result},
-                        }))
-
+                        await dispatch_tool_request(ws, msg)
                     elif mtype == "ERROR":
                         print(f"[Hermes] Gateway error: {msg.get('message')}")
 
@@ -136,6 +113,45 @@ async def run():
         except Exception as e:
             print(f"[Hermes] Unexpected error: {e} — retrying in {RECONNECT_DELAY}s")
             await asyncio.sleep(RECONNECT_DELAY)
+
+
+async def dispatch_prompt(ws, msg, generate=ollama_generate):
+    """Handle a PROMPT without blocking the event loop (gateway watchdog: 20s)."""
+    if generate is None or not callable(generate):
+        raise TypeError("dispatch_prompt requires a callable generate")
+
+    payload = msg.get("payload", {})
+    prompt  = payload.get("prompt", "") if isinstance(payload, dict) else str(payload)
+    model   = payload.get("model", DEFAULT_MODEL) if isinstance(payload, dict) else DEFAULT_MODEL
+
+    print(f"[Hermes] PROMPT ({model}) → {prompt[:80]}…")
+    reply = await run_blocking(generate, prompt, model)
+    print(f"[Hermes] RESPONSE → {reply[:80]}…")
+
+    await ws.send(json.dumps({
+        "type":    "HERMES_RESPONSE",
+        "agent":   "hermes",
+        "payload": reply,
+    }))
+    return reply
+
+
+async def dispatch_tool_request(ws, msg, generate=ollama_generate):
+    """Handle a TOOL_REQUEST without blocking the event loop."""
+    if generate is None or not callable(generate):
+        raise TypeError("dispatch_tool_request requires a callable generate")
+
+    tool_name = msg.get("payload", {}).get("tool", "unknown")
+    print(f"[Hermes] TOOL_REQUEST — {tool_name}")
+    result = await run_blocking(
+        generate, f"Tool call: {json.dumps(msg.get('payload', {}))}"
+    )
+    await ws.send(json.dumps({
+        "type":    "TOOL_RESULT",
+        "agent":   "hermes",
+        "payload": {"tool": tool_name, "result": result},
+    }))
+    return result
 
 
 async def heartbeat(ws):

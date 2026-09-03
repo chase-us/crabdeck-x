@@ -36,6 +36,9 @@ import asyncio, json, os, subprocess, sys, platform, time
 import requests
 import websockets
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from offload import run_blocking
+
 GATEWAY_URL       = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN     = os.environ.get("GATEWAY_TOKEN")
 OLLAMA_URL        = os.environ.get("OLLAMA_URL", "http://localhost:11434")
@@ -179,10 +182,11 @@ async def run():
 
                 print("[OpenClaw] Connected to Gateway ✅")
 
+                app_up = await run_blocking(openclaw_available)
                 await ws.send(json.dumps({
                     "type": "TASK_RESULT", "agent": "openclaw",
                     "payload": {"status": "online", "system": info,
-                                "openclaw_app": openclaw_available()},
+                                "openclaw_app": app_up},
                 }))
 
                 heartbeat_task = asyncio.create_task(heartbeat(ws))
@@ -196,20 +200,9 @@ async def run():
                     mtype = msg.get("type")
 
                     if mtype == "TASK":
-                        payload = msg.get("payload", {})
-                        # handle_task does blocking HTTP/Ollama/subprocess calls that can
-                        # run for tens of seconds — run it in a thread so it doesn't stall
-                        # the event loop (and with it, the heartbeat task) while it works.
-                        result  = await asyncio.to_thread(handle_task, payload)
-                        await ws.send(json.dumps({
-                            "type":    "TASK_RESULT",
-                            "agent":   "openclaw",
-                            "payload": {"task": str(payload)[:80], "result": result},
-                        }))
-
+                        await dispatch_task(ws, msg)
                     elif mtype == "WELCOME":
                         print(f"[OpenClaw] Gateway: {msg.get('message', '')}")
-
                     elif mtype == "ERROR":
                         print(f"[OpenClaw] Gateway error: {msg.get('message')}")
 
@@ -224,6 +217,21 @@ async def run():
         except Exception as e:
             print(f"[OpenClaw] Error: {e} — retrying in {RECONNECT_DELAY}s")
             await asyncio.sleep(RECONNECT_DELAY)
+
+
+async def dispatch_task(ws, msg, handle=handle_task):
+    """Handle a TASK without blocking the event loop (gateway watchdog: 20s)."""
+    if handle is None or not callable(handle):
+        raise TypeError("dispatch_task requires a callable handle")
+
+    payload = msg.get("payload", {})
+    result = await run_blocking(handle, payload)
+    await ws.send(json.dumps({
+        "type":    "TASK_RESULT",
+        "agent":   "openclaw",
+        "payload": {"task": str(payload)[:80], "result": result},
+    }))
+    return result
 
 
 async def heartbeat(ws):
