@@ -159,7 +159,7 @@ if ($OpenGateway) {
 Set-Content -Path "$InstallDir\gateway\.env" -Value @"
 PORT=8765
 GATEWAY_TOKEN=$token
-ALLOWED_ORIGINS=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 VAULT_URL=http://localhost:7070
 VAULT_TOKEN=$token
 "@
@@ -167,7 +167,7 @@ VAULT_TOKEN=$token
 Set-Content -Path "$InstallDir\orchestrator\.env" -Value @"
 GATEWAY_URL=ws://localhost:8765
 GATEWAY_TOKEN=$token
-ALLOWED_ORIGINS=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 VAULT_URL=http://localhost:7070
 VAULT_TOKEN=$token
 "@
@@ -194,7 +194,7 @@ VITE_GATEWAY_TOKEN=$token
 Set-Content -Path "$InstallDir\vault\.env" -Value @"
 PORT=7070
 VAULT_TOKEN=$token
-ALLOWED_ORIGINS=http://localhost:5173
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 VAULT_DATA_DIR=./data
 VAULT_VECTOR_BACKEND=sqlite
 "@

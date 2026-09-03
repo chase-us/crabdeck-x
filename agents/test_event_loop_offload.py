@@ -177,7 +177,10 @@ class HeartbeatOffloadTests(unittest.IsolatedAsyncioTestCase):
             return True
 
         task = asyncio.create_task(heartbeat(_WS(), emit=emit, every=0))
-        self.assertTrue(progressed.wait(timeout=12.0))
+        deadline = time.monotonic() + 2.0
+        while not progressed.is_set() and time.monotonic() < deadline:
+            await asyncio.sleep(0)
+        self.assertTrue(progressed.is_set())
         task.cancel()
         try:
             await task

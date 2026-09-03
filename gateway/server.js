@@ -25,7 +25,7 @@ const { ingestHeartbeat } = require('./vault_client')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',').map(s => s.trim()).filter(Boolean)
 
 if (!GATEWAY_TOKEN) {
