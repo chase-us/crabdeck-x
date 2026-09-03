@@ -66,6 +66,19 @@ def add_event(event_type: str, message: str, agent_id: Optional[str] = None):
         del events[:len(events) - MAX_EVENTS]
     print(f"[{event_type}] {message}")
 
+def mark_gateway(status: str) -> None:
+    """The gateway never announces itself over AGENT_STATUS; our own socket to it is the evidence."""
+    gw = agents.get("crabdeck")
+    if gw is None:
+        return
+    changed = gw.status != status
+    gw.status = status
+    gw.error_message = None if status == "running" else gw.error_message
+    if status == "running":
+        gw.last_heartbeat = time.time()
+    if changed:
+        add_event("AGENT_STATUS", f"crabdeck → {status}", "crabdeck")
+
 def seed_agents():
     now = time.time()
     for agent_id, name in [("crabdeck", "CrabDeck Gateway"),
@@ -226,6 +239,7 @@ async def listen_gateway():
                     hello["token"] = GATEWAY_TOKEN
                 await ws.send(json.dumps(hello))
                 add_event("SYSTEM", "Connected to CrabDeck Gateway", None)
+                mark_gateway("running")
                 hb_task = asyncio.create_task(orchestrator_heartbeat(ws))
                 try:
                     async for raw in ws:
@@ -233,6 +247,8 @@ async def listen_gateway():
                             msg = json.loads(raw)
                             if msg.get("type") == "ERROR":
                                 add_event("SYSTEM", f"Gateway auth error: {msg.get('message')}", None)
+                            if msg.get("type") == "HEARTBEAT_ACK":
+                                mark_gateway("running")
                             if msg.get("type") == "AGENT_STATUS":
                                 agent_id = msg.get("agent")
                                 status   = msg.get("status", "offline")
@@ -251,7 +267,9 @@ async def listen_gateway():
                             pass
                 finally:
                     hb_task.cancel()
+                    mark_gateway("offline")
         except Exception as e:
+            mark_gateway("offline")
             add_event("SYSTEM", f"Gateway disconnected: {e} — retrying in 5 s", None)
             await asyncio.sleep(5)
 

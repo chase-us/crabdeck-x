@@ -88,6 +88,15 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sent["payload"]["intent"], "tell")
         self.assertEqual(sent["payload"]["session_id"], "s")
 
+    async def test_mark_gateway_tracks_socket_state(self) -> None:
+        main.agents["crabdeck"].status = "offline"
+        main.mark_gateway("running")
+        self.assertEqual(main.agents["crabdeck"].status, "running")
+        self.assertIsNone(main.agents["crabdeck"].error_message)
+        main.mark_gateway("offline")
+        self.assertEqual(main.agents["crabdeck"].status, "offline")
+        self.assertEqual(sum(1 for e in main.events if e.agent_id == "crabdeck"), 2)
+
     async def test_mesh_tell_is_logged_only(self) -> None:
         ws = AsyncMock()
         self.assertIsNone(await handle_mesh(ws, {"from": "openclaw", "payload": {"text": "fyi"}}))

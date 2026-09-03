@@ -185,7 +185,7 @@ export default function Swarm({ swarm, connected, send, defaultModel }) {
                 {s.status === 'synthesizing' && <div style={{ color: '#a78bfa', fontSize: 12 }}>⚡ Hermes is merging the transcript…</div>}
                 {s.error && <div style={{ color: '#f87171', fontSize: 12 }}>{s.error}</div>}
                 {s.result && <div style={{ color: '#c4b5fd', fontSize: 12, whiteSpace: 'pre-wrap', lineHeight: 1.6 }}>{s.result}</div>}
-                {s.status === 'done' && <div style={{ color: '#334155', fontSize: 10, marginTop: 8 }}>Stored in Shell Cracked as swarm_result — search it in Telemetry.</div>}
+                {s.status === 'done' && <div style={{ color: '#64748b', fontSize: 10, marginTop: 8 }}>Stored in Shell Cracked as swarm_result — search it in Telemetry.</div>}
               </div>
             )}
           </>
