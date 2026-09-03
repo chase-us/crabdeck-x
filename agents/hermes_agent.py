@@ -136,16 +136,30 @@ async def dispatch_prompt(ws, msg, generate=ollama_generate):
     return reply
 
 
+def _tool_request_payload(msg):
+    """Normalize TOOL_REQUEST payload. Non-dicts become {\"raw\": ...}."""
+    raw = msg.get("payload", {}) if isinstance(msg, dict) else {}
+    if not isinstance(raw, dict):
+        return {"tool": "unknown", "raw": raw}
+    tool = raw.get("tool", "unknown")
+    if not isinstance(tool, str) or not tool.strip():
+        tool = "unknown"
+    return {**raw, "tool": tool}
+
+
 async def dispatch_tool_request(ws, msg, generate=ollama_generate):
     """Handle a TOOL_REQUEST without blocking the event loop."""
     if generate is None or not callable(generate):
         raise TypeError("dispatch_tool_request requires a callable generate")
 
-    tool_name = msg.get("payload", {}).get("tool", "unknown")
+    payload = _tool_request_payload(msg)
+    tool_name = payload["tool"]
     print(f"[Hermes] TOOL_REQUEST — {tool_name}")
-    result = await run_blocking(
-        generate, f"Tool call: {json.dumps(msg.get('payload', {}))}"
-    )
+    try:
+        encoded = json.dumps(payload)
+    except TypeError:
+        encoded = json.dumps({"tool": tool_name, "raw": str(payload)})
+    result = await run_blocking(generate, f"Tool call: {encoded}")
     await ws.send(json.dumps({
         "type":    "TOOL_RESULT",
         "agent":   "hermes",
