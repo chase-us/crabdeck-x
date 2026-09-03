@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from bhive import minute_slot, validate_agent
+from rag import CONTEXT_BUDGET, assemble, chunk_text
 from sqlite_store import SqliteVault
 from vectors import VectorMemory, open_vector_memory
 
@@ -37,6 +38,16 @@ class MemoryIn(BaseModel):
 class SessionIn(BaseModel):
     session_id: str = Field(min_length=1, max_length=128)
     context: dict[str, Any]
+
+
+class RagIngestIn(BaseModel):
+    """Chunked ingest. Larger cap than /v1/memory because documents get split."""
+
+    agent: str
+    kind: str = Field(min_length=1, max_length=64)
+    text: str = Field(min_length=1, max_length=40000)
+    source: str = Field(default="", max_length=200)
+    metadata: dict[str, Any] = Field(default_factory=dict)
 
 
 def create_app(
@@ -77,6 +88,7 @@ def create_app(
             "service": "shell-cracked",
             "vector_backend": VECTOR_BACKEND,
             "vector_count": vec.count(),
+            "embed_space": getattr(vec, "space", "unknown"),
             "bhive_slot": minute_slot(time.time()),
             "authRequired": bool(token),
         }
@@ -138,6 +150,79 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"query": q.strip(), "hits": hits}
 
+    @api.post("/v1/rag/ingest")
+    def rag_ingest(
+        body: RagIngestIn,
+        authorization: str | None = Header(default=None),
+        x_vault_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Split a document into passages and index each one separately."""
+        require_token(authorization, x_vault_token)
+        if not isinstance(body.metadata, dict):
+            raise HTTPException(status_code=400, detail="metadata must be a dict")
+        try:
+            agent = validate_agent(body.agent)
+            chunks = chunk_text(body.text)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not chunks:
+            raise HTTPException(status_code=400, detail="text produced no indexable chunks")
+
+        doc_id = f"{agent}:{uuid.uuid4().hex}"
+        ids: list[str] = []
+        for index, chunk in enumerate(chunks):
+            chunk_id = f"{doc_id}#{index}"
+            meta = {
+                **body.metadata,
+                "agent": agent,
+                "kind": body.kind,
+                "doc_id": doc_id,
+                "chunk": index,
+                "chunks": len(chunks),
+            }
+            if body.source.strip():
+                meta["source"] = body.source.strip()
+            try:
+                vec.add(chunk_id, chunk, meta)
+            except (TypeError, ValueError):
+                # One unindexable passage must not discard the whole document.
+                continue
+            ids.append(chunk_id)
+        if not ids:
+            raise HTTPException(status_code=400, detail="no chunk could be embedded")
+        event_id = db.log_event(
+            "rag_ingest",
+            {"doc_id": doc_id, "kind": body.kind, "chunks": len(ids)},
+            agent=agent,
+        )
+        return {"doc_id": doc_id, "ids": ids, "chunks": len(ids), "event_id": event_id}
+
+    @api.get("/v1/rag/query")
+    def rag_query(
+        q: str,
+        n: int = 12,
+        k: int = 4,
+        budget: int = CONTEXT_BUDGET,
+    ) -> dict[str, Any]:
+        """Retrieve, diversify, and return a cited context block + prompt.
+
+        Server-side so Python agents, the Node gateway, and the UI all ground
+        on identical context instead of three drifting implementations.
+        """
+        if not q or not q.strip():
+            raise HTTPException(status_code=400, detail="q must be non-empty")
+        try:
+            hits = vec.query(q.strip(), n=n)
+            result = assemble(q.strip(), hits, k=k, budget=budget)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "query": q.strip(),
+            "space": getattr(vec, "space", "unknown"),
+            "retrieved": len(hits),
+            **result,
+        }
+
     @api.get("/v1/agents")
     def agents() -> dict[str, Any]:
         return {"agents": db.list_agents()}
@@ -188,8 +273,12 @@ ALLOWED_ORIGINS = [
 DATA_DIR = Path(os.environ.get("VAULT_DATA_DIR", os.path.join(os.path.dirname(__file__), "data")))
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 VECTOR_BACKEND = os.environ.get("VAULT_VECTOR_BACKEND", "sqlite")
+# hash (default, offline lexical) | ollama (semantic, needs :11434) | blake2 (legacy)
+EMBEDDER = os.environ.get("VAULT_EMBEDDER", "hash")
 _STORE = SqliteVault(DATA_DIR / "shell_cracked.db")
-_VECTORS = open_vector_memory(DATA_DIR / f"vectors-{VECTOR_BACKEND}", VECTOR_BACKEND)
+_VECTORS = open_vector_memory(
+    DATA_DIR / f"vectors-{VECTOR_BACKEND}", VECTOR_BACKEND, embedder=EMBEDDER
+)
 app = create_app()
 
 
