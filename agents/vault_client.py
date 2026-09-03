@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -95,3 +96,25 @@ def emit_memory(agent: str, kind: str, text: str, metadata: dict[str, Any] | Non
         "metadata": metadata if isinstance(metadata, dict) else {},
     }
     return _post("/v1/memory", payload) is not None
+
+
+def retrieve_memory(query: str, limit: int = 5, timeout: float = 1.5) -> list[dict[str, Any]]:
+    """Fetch bounded RAG context. Retrieval is fail-open for agent availability."""
+    if not isinstance(query, str) or not query.strip():
+        return []
+    if not isinstance(limit, int) or not 1 <= limit <= 50:
+        return []
+    params = urllib.parse.urlencode({"q": query.strip(), "n": limit})
+    req = urllib.request.Request(
+        f"{VAULT_URL}/v1/memory/query?{params}",
+        headers={"Accept": "application/json"},
+    )
+    if VAULT_TOKEN:
+        req.add_header("X-Vault-Token", VAULT_TOKEN)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8"))
+        hits = body.get("hits", []) if isinstance(body, dict) else []
+        return hits if isinstance(hits, list) else []
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return []
