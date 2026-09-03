@@ -104,7 +104,7 @@ if (Test-Path $orchPath) {
         OK "Orchestrator venv ready"
     }
     Start-Process powershell -ArgumentList `
-        "-NoExit -Command `"Set-Location '$orchPath'; .venv\Scripts\activate; Write-Host 'Orchestrator Core' -ForegroundColor Magenta; uvicorn main:app --reload --port 8000`"" `
+        "-NoExit -Command `"Set-Location '$orchPath'; .venv\Scripts\activate; Write-Host 'Orchestrator Core' -ForegroundColor Magenta; uvicorn main:app --reload --host 0.0.0.0 --port 8000`"" `
         -WindowStyle Normal
     Start-Sleep -Milliseconds 600
     OK "Orchestrator started  → http://localhost:8000  |  /docs"

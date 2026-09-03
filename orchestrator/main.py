@@ -22,6 +22,8 @@ import websockets
 GATEWAY_URL        = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN      = os.environ.get("GATEWAY_TOKEN")
 ALLOWED_ORIGINS    = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
+ORCH_HOST          = os.environ.get("HOST", "0.0.0.0")
+ORCH_PORT          = int(os.environ.get("PORT", "8000"))
 HEARTBEAT_INTERVAL = 3.0
 HEARTBEAT_TIMEOUT  = 15.0
 MAX_EVENTS         = 300
@@ -132,7 +134,12 @@ app.add_middleware(
 # ── REST API ──────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "agent_count": len(agents), "uptime": time.time()}
+    return {
+        "status": "ok",
+        "bind": {"host": ORCH_HOST, "port": ORCH_PORT},
+        "agent_count": len(agents),
+        "uptime": time.time(),
+    }
 
 @app.get("/agents", response_model=List[Agent])
 def list_agents():
@@ -160,4 +167,4 @@ def get_events(limit: int = 100):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("main:app", host=ORCH_HOST, port=ORCH_PORT, reload=True)

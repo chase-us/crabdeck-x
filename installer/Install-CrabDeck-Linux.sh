@@ -77,6 +77,7 @@ else
 fi
 
 cat > "$INSTALL_DIR/gateway/.env" << ENV
+HOST=0.0.0.0
 PORT=8765
 GATEWAY_TOKEN=$TOKEN
 ALLOWED_ORIGINS=http://localhost:5173
@@ -86,6 +87,8 @@ cat > "$INSTALL_DIR/orchestrator/.env" << ENV
 GATEWAY_URL=ws://localhost:8765
 GATEWAY_TOKEN=$TOKEN
 ALLOWED_ORIGINS=http://localhost:5173
+HOST=0.0.0.0
+PORT=8000
 ENV
 
 cat > "$INSTALL_DIR/agents/.env" << ENV
@@ -108,60 +111,9 @@ ENV
 green ".env files written for gateway, orchestrator, agents, ui"
 [ "$OPEN_GATEWAY" = false ] && info "OpenClaw shell execution is OFF by default. See agents/openclaw_agent.py before setting ENABLE_SHELL_EXEC=1."
 
-# ── Launcher script (sources every .env before starting each service) ───────
-cat > "$INSTALL_DIR/start.sh" << LAUNCH
-#!/usr/bin/env bash
-cd "$INSTALL_DIR"
-echo "🦀 CrabDeck v2.2 — Starting all services…"
-
-load_env() { [ -f "\$1" ] && { set -a; source "\$1"; set +a; }; }
-
-# 1. Ollama
-if command -v ollama >/dev/null 2>&1; then
-    echo "  [1] Starting Ollama…"
-    ollama serve &>/tmp/ollama.log &
-    sleep 2
-fi
-
-# 2. Gateway
-load_env gateway/.env
-echo "  [2] Starting Gateway (port 8765)…"
-(cd gateway && node server.js) &>/tmp/gateway.log &
-sleep 1
-
-# 3. Orchestrator
-load_env orchestrator/.env
-echo "  [3] Starting Orchestrator (port 8000)…"
-(cd orchestrator && .venv/bin/uvicorn main:app --port 8000) &>/tmp/orchestrator.log &
-sleep 1
-
-# 4. Hermes
-load_env agents/.env
-echo "  [4] Starting Hermes Agent…"
-(cd agents && .venv/bin/python hermes_agent.py) &>/tmp/hermes.log &
-sleep 1
-
-# 5. OpenClaw
-echo "  [5] Starting OpenClaw Agent…"
-(cd agents && .venv/bin/python openclaw_agent.py) &>/tmp/openclaw.log &
-sleep 2
-
-# 6. UI
-echo "  [6] Starting UI (port 5173)…"
-(cd ui && npm run dev) &>/tmp/ui.log &
-sleep 3
-
-echo ""
-echo "  ✅  CrabDeck is running!"
-echo "      UI           → http://localhost:5173"
-echo "      Gateway      → ws://localhost:8765"
-echo "      Orchestrator → http://localhost:8000"
-echo ""
-echo "  Logs: /tmp/{gateway,orchestrator,hermes,openclaw,ui}.log"
-echo "  Stop: kill \\\$(lsof -ti :5173 :8765 :8000) 2>/dev/null; pkill -f hermes_agent; pkill -f openclaw_agent"
-LAUNCH
-chmod +x "$INSTALL_DIR/start.sh"
-green "start.sh written"
+# ── Launcher scripts (repo start.sh binds HOST=0.0.0.0 for Cloudflare) ──────
+chmod +x "$INSTALL_DIR/start.sh" "$INSTALL_DIR/stop.sh" "$INSTALL_DIR/scripts/origin-diagnose.sh"
+green "start.sh / stop.sh ready"
 
 # ── Done ──────────────────────────────────────────────────────────────────────
 echo ""

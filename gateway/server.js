@@ -19,8 +19,11 @@ const { WebSocketServer, WebSocket } = require('ws')
 const http  = require('http')
 const crypto = require('crypto')
 const { randomUUID } = crypto
+const { gatewayBindConfig } = require('./bind')
 
-const PORT          = process.env.PORT || 8765
+const BIND          = gatewayBindConfig(process.env)
+const PORT          = BIND.port
+const HOST          = BIND.host
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
   .split(',').map(s => s.trim()).filter(Boolean)
@@ -46,22 +49,31 @@ const agentStatus = {
   crabdeck: 'running',
 }
 
-// ── HTTP health endpoint ───────────────────────────────────────────────────
-const httpServer = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({
-      status:      'ok',
-      authRequired: Boolean(GATEWAY_TOKEN),
-      clients:     clients.size,
-      agentStatus,
-      uptime:      process.uptime(),
-    }))
-  } else {
-    res.writeHead(404)
-    res.end()
+function healthPayload() {
+  return {
+    status:       'ok',
+    bind:         { host: HOST, port: PORT, originPorts: BIND.originPorts },
+    listeners:    BIND.listeners,
+    authRequired: Boolean(GATEWAY_TOKEN),
+    clients:      clients.size,
+    agentStatus,
+    uptime:       process.uptime(),
   }
-})
+}
+
+function handleHttp(req, res) {
+  const url = (req.url || '/').split('?')[0]
+  if (url === '/health' || url === '/ready' || url === '/') {
+    res.writeHead(200, { 'Content-Type': 'application/json' })
+    res.end(JSON.stringify(healthPayload()))
+    return
+  }
+  res.writeHead(404)
+  res.end()
+}
+
+// ── HTTP health endpoint (also answers `/` so Cloudflare origin probes succeed)
+const httpServer = http.createServer(handleHttp)
 
 // ── WebSocket server ───────────────────────────────────────────────────────
 const wss = new WebSocketServer({
@@ -246,14 +258,50 @@ setInterval(() => {
   }
 }, 10_000)
 
+function listenOn(server, port, host) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => reject(err)
+    server.once('error', onError)
+    server.listen(port, host, () => {
+      server.off('error', onError)
+      resolve(server.address())
+    })
+  })
+}
+
+// Extra public HTTP sockets (ORIGIN_PORT=80,443) so Cloudflare can handshake
+// :80/:443 while the agent bus stays on 8765. These answer /health only.
+async function listenOriginPorts() {
+  for (const originPort of BIND.originPorts) {
+    const extra = http.createServer(handleHttp)
+    try {
+      await listenOn(extra, originPort, HOST)
+      console.log(`[origin] extra listener ${HOST}:${originPort}`)
+    } catch (err) {
+      // Privileged ports (:80/:443) fail without root/cap_net_bind_service.
+      // Keep the bus on PORT alive so Caddy/nginx can still reverse-proxy.
+      console.error(`[origin] failed to bind ${HOST}:${originPort}: ${err.message} (gateway still listening on ${HOST}:${PORT})`)
+    }
+  }
+}
+
 // ── Start ─────────────────────────────────────────────────────────────────
-httpServer.listen(PORT, () => {
-  console.log(`
+listenOn(httpServer, PORT, HOST)
+  .then(async (addr) => {
+    await listenOriginPorts()
+    const shown = addr && typeof addr === 'object' ? `${addr.address}:${addr.port}` : `${HOST}:${PORT}`
+    console.log(`
   ████████████████████████████████████████
   🦀  CRABDECK GATEWAY  v2.2
-      WebSocket : ws://localhost:${PORT}
-      HTTP/health: http://localhost:${PORT}/health
+      Bind       : ${shown}
+      Listeners  : ${BIND.listeners.join(', ')}
+      WebSocket  : ws://${HOST}:${PORT}
+      HTTP/health: http://${HOST}:${PORT}/health
       Auth: ${GATEWAY_TOKEN ? 'ENABLED (token required)' : 'DISABLED (dev mode — set GATEWAY_TOKEN for prod)'}
   ████████████████████████████████████████
   `)
-})
+  })
+  .catch((err) => {
+    console.error(`[origin] gateway failed to bind ${HOST}:${PORT}: ${err.message}`)
+    process.exit(1)
+  })

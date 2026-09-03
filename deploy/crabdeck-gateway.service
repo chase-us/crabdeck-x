@@ -1,0 +1,20 @@
+[Unit]
+Description=CrabDeck gateway origin (Cloudflare health on :8765)
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/crabdeck/gateway
+Environment=HOST=0.0.0.0
+Environment=PORT=8765
+EnvironmentFile=-/opt/crabdeck/gateway/.env
+ExecStart=/usr/bin/node /opt/crabdeck/gateway/server.js
+Restart=always
+RestartSec=3
+# Allow binding :80/:443 when ORIGIN_PORT is set without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+
+[Install]
+WantedBy=multi-user.target
