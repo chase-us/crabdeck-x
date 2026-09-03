@@ -1,0 +1,29 @@
+{
+  admin off
+}
+
+# Public origin for Cloudflare. HTTP 521 means nothing answered here.
+:80 {
+  encode gzip
+
+  handle /health {
+    reverse_proxy gateway:8765
+  }
+
+  handle /ready {
+    reverse_proxy gateway:8765
+  }
+
+  handle /api* {
+    uri strip_prefix /api
+    reverse_proxy orchestrator:8000
+  }
+
+  handle /ws {
+    reverse_proxy gateway:8765
+  }
+
+  handle {
+    reverse_proxy gateway:8765
+  }
+}

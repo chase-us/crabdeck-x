@@ -30,8 +30,12 @@ before pointing hermes-claw.ai at a live instance.
 
 - **TLS.** Nothing here terminates TLS. Put the gateway (`ws://`) and
   orchestrator (`http://`) behind a reverse proxy (nginx/Caddy) doing
-  `wss://` and `https://` on hermes-claw.ai, and only expose that, not the
-  raw ports.
+  `wss://` and `https://` on hermesclaw.ai, and only expose that, not the
+  raw ports. `docker compose up -d` publishes Caddy on `:80` for that.
+- **Cloudflare 521.** The origin process must listen on a **routable**
+  address (`HOST=0.0.0.0`) and on the port Cloudflare dials (`:80` or
+  `:443`). Binding only `127.0.0.1:8765` looks healthy locally and still
+  returns 521 at the edge. Confirm with `./scripts/origin-diagnose.sh`.
 - **Token rotation/storage.** `GATEWAY_TOKEN` is a single static shared
   secret distributed to every service's `.env`. That's fine for "only my own
   agents connect," but it is not per-user auth — anyone who gets the token

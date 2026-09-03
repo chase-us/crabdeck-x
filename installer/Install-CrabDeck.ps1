@@ -148,6 +148,7 @@ if ($OpenGateway) {
 }
 
 Set-Content -Path "$InstallDir\gateway\.env" -Value @"
+HOST=0.0.0.0
 PORT=8765
 GATEWAY_TOKEN=$token
 ALLOWED_ORIGINS=http://localhost:5173
@@ -157,6 +158,8 @@ Set-Content -Path "$InstallDir\orchestrator\.env" -Value @"
 GATEWAY_URL=ws://localhost:8765
 GATEWAY_TOKEN=$token
 ALLOWED_ORIGINS=http://localhost:5173
+HOST=0.0.0.0
+PORT=8000
 "@
 
 Set-Content -Path "$InstallDir\agents\.env" -Value @"
@@ -214,7 +217,7 @@ Start-Sleep 1
 # 3. Orchestrator
 Import-DotEnv 'orchestrator\.env'
 Write-Host '  [3/6] Starting Orchestrator (port 8000)...' -ForegroundColor DarkCyan
-Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd orchestrator; .\.venv\Scripts\uvicorn main:app --port 8000' -WindowStyle Minimized
+Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd orchestrator; .\.venv\Scripts\uvicorn main:app --host 0.0.0.0 --port 8000' -WindowStyle Minimized
 Start-Sleep 1
 
 # 4. Hermes Agent

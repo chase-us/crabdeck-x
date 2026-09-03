@@ -56,6 +56,20 @@ Or double-click the **CrabDeck** desktop shortcut.
 
 Opens: **http://localhost:5173**
 
+### Origin recovery (Cloudflare HTTP 521)
+
+`521 Web Server Is Down` means Cloudflare reached its anycast edge but **nothing accepted TCP on the origin host** (`:80`/`:443`). This repo now binds the gateway on `0.0.0.0` (not loopback) and ships an origin edge.
+
+On the machine Cloudflare is proxied to:
+
+```bash
+./scripts/origin-diagnose.sh          # process / port / local health / public 521
+./start.sh --gateway-only             # restore :8765  →  curl http://127.0.0.1:8765/health
+docker compose up -d                  # publish :80 via Caddy → gateway /health
+```
+
+`GET /`, `/health`, and `/ready` on the gateway all return `{"status":"ok",...}` so origin probes succeed. `ORIGIN_PORT=80,443` adds extra HTTP listeners when the process has bind privilege.
+
 ---
 
 ## 🏗️ Architecture
