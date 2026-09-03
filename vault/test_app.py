@@ -97,6 +97,47 @@ class VaultAppTests(unittest.TestCase):
         r = self.client.get("/v1/memory/query", params={"q": "   "})
         self.assertEqual(r.status_code, 400)
 
+    def test_rag_retrieve_and_filter(self) -> None:
+        self.client.post(
+            "/v1/memory",
+            json={
+                "agent": "hermes",
+                "kind": "prompt_result",
+                "text": "Mesh node alpha reports latency 12ms",
+            },
+        )
+        self.client.post(
+            "/v1/memory",
+            json={
+                "agent": "openclaw",
+                "kind": "task_result",
+                "text": "Disk status check completed on root partition",
+            },
+        )
+        # Cross-agent RAG retrieve
+        res = self.client.post(
+            "/v1/rag/retrieve",
+            json={"query": "Mesh node latency", "n": 3, "synthesize": True},
+        )
+        self.assertEqual(res.status_code, 200)
+        body = res.json()
+        self.assertIn("citations", body)
+        self.assertIn("context_prompt", body)
+        self.assertIn("synthesis", body)
+        self.assertGreaterEqual(body["hits_count"], 1)
+        self.assertIn("hermes", body["agents_represented"])
+
+        # Agent-filtered retrieve with exact query string
+        res_claw = self.client.post(
+            "/v1/rag/retrieve",
+            json={"query": "Disk status check completed on root partition", "agent": "openclaw", "n": 2},
+        )
+        self.assertEqual(res_claw.status_code, 200)
+        claw_body = res_claw.json()
+        self.assertIn("openclaw", claw_body["agents_represented"])
+        for h in claw_body["hits"]:
+            self.assertEqual(h["metadata"]["agent"], "openclaw")
+
     def test_session_round_trip(self) -> None:
         put = self.client.post(
             "/v1/session",

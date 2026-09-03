@@ -90,11 +90,16 @@ class SqliteAndVectorTests(unittest.TestCase):
             self.vault.log_event("x", "nope")  # type: ignore[arg-type]
 
     def test_vector_query_ranks_similar_text(self) -> None:
-        self.vec.add("a", "hermes generated a reply about ollama latency", {"k": "a"})
-        self.vec.add("b", "unrelated cooking recipe with garlic", {"k": "b"})
+        self.vec.add("a", "hermes generated a reply about ollama latency", {"agent": "hermes", "k": "a"})
+        self.vec.add("b", "unrelated cooking recipe with garlic", {"agent": "openclaw", "k": "b"})
         hits = self.vec.query("hermes generated a reply about ollama latency", n=2)
         self.assertEqual(hits[0]["id"], "a")
         self.assertGreater(hits[0]["score"], hits[1]["score"])
+
+        # Agent-filtered query
+        hermes_only = self.vec.query("garlic recipe", n=2, agent="hermes")
+        self.assertEqual(len(hermes_only), 1)
+        self.assertEqual(hermes_only[0]["id"], "a")
 
     def test_embed_normalized(self) -> None:
         from vectors import embed_text

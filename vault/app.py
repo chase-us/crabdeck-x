@@ -39,6 +39,14 @@ class SessionIn(BaseModel):
     context: dict[str, Any]
 
 
+class RagQueryIn(BaseModel):
+    query: str = Field(min_length=1, max_length=1000)
+    n: int = Field(default=5, ge=1, le=50)
+    agent: str | None = None
+    min_score: float = Field(default=0.0, ge=-1.0, le=1.0)
+    synthesize: bool = False
+
+
 def create_app(
     store: SqliteVault | None = None,
     vectors: VectorMemory | None = None,
@@ -129,14 +137,75 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     @api.get("/v1/memory/query")
-    def query_memory(q: str, n: int = 5) -> dict[str, Any]:
+    def query_memory(q: str, n: int = 5, agent: str | None = None) -> dict[str, Any]:
         if not q or not q.strip():
             raise HTTPException(status_code=400, detail="q must be non-empty")
         try:
-            hits = vec.query(q.strip(), n=n)
+            hits = vec.query(q.strip(), n=n, agent=agent)
         except (TypeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {"query": q.strip(), "hits": hits}
+        return {"query": q.strip(), "hits": hits, "agent": agent}
+
+    @api.post("/v1/rag/retrieve")
+    def rag_retrieve(
+        body: RagQueryIn,
+        authorization: str | None = Header(default=None),
+        x_vault_token: str | None = Header(default=None),
+    ) -> dict[str, Any]:
+        """Collaborative Swarm RAG retrieval endpoint.
+        Returns ranked documents with citations, metadata, and cross-agent context.
+        """
+        if not body.query or not body.query.strip():
+            raise HTTPException(status_code=400, detail="query must be non-empty")
+        try:
+            hits = vec.query(body.query.strip(), n=body.n, agent=body.agent)
+        except (TypeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        filtered_hits = [h for h in hits if h.get("score", 0.0) >= body.min_score]
+
+        # Build structured context block and citations
+        citations = []
+        contexts = []
+        agents_represented = set()
+        for idx, hit in enumerate(filtered_hits, 1):
+            h_meta = hit.get("metadata", {})
+            h_agent = h_meta.get("agent", "unknown")
+            agents_represented.add(h_agent)
+            h_kind = h_meta.get("kind", "memory")
+            h_score = round(float(hit.get("score", 0.0)), 4)
+            h_text = hit.get("text", "")
+
+            citation = {
+                "source_id": f"[{idx}]",
+                "doc_id": hit.get("id"),
+                "agent": h_agent,
+                "kind": h_kind,
+                "score": h_score,
+                "excerpt": h_text[:200],
+            }
+            citations.append(citation)
+            contexts.append(f"[{idx}] ({h_agent} / {h_kind}) [relevance: {h_score}]:\n{h_text}")
+
+        context_prompt = "\n\n".join(contexts) if contexts else "(No prior swarm memories matched this query)"
+
+        result: dict[str, Any] = {
+            "query": body.query.strip(),
+            "hits_count": len(filtered_hits),
+            "hits": filtered_hits,
+            "citations": citations,
+            "agents_represented": sorted(list(agents_represented)),
+            "context_prompt": context_prompt,
+        }
+
+        if body.synthesize:
+            # Deterministic multi-source RAG synthesis for air-gapped / prompt-free extraction
+            summary_lines = [f"Retrieved {len(filtered_hits)} memories across {len(agents_represented)} agents:"]
+            for c in citations[:3]:
+                summary_lines.append(f"- {c['agent']} ({c['kind']}): {c['excerpt'][:120]}...")
+            result["synthesis"] = "\n".join(summary_lines)
+
+        return result
 
     @api.get("/v1/agents")
     def agents() -> dict[str, Any]:

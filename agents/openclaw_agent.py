@@ -38,7 +38,7 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
-from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
+from vault_client import emit_heartbeat, emit_memory, heartbeat_payload, query_rag
 
 GATEWAY_URL       = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN     = os.environ.get("GATEWAY_TOKEN")
@@ -202,6 +202,12 @@ async def run():
 
                     if mtype == "TASK":
                         await dispatch_task(ws, msg)
+                    elif mtype == "SWARM_MESSAGE":
+                        await dispatch_swarm_message(ws, msg)
+                    elif mtype == "SWARM_TASK_DISPATCH":
+                        await dispatch_swarm_task(ws, msg)
+                    elif mtype == "SWARM_BROADCAST":
+                        print(f"[OpenClaw] Swarm Broadcast from {msg.get('from')}: {msg.get('topic')}")
                     elif mtype == "WELCOME":
                         print(f"[OpenClaw] Gateway: {msg.get('message', '')}")
                     elif mtype == "ERROR":
@@ -220,7 +226,7 @@ async def run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-async def dispatch_task(ws, msg, handle=handle_task, remember=emit_memory):
+async def dispatch_task(ws, msg, handle=handle_task, remember=emit_memory, rag_retrieve=query_rag):
     """Handle a TASK without blocking the event loop (gateway watchdog: 20s)."""
     if handle is None or not callable(handle):
         raise TypeError("dispatch_task requires a callable handle")
@@ -229,6 +235,19 @@ async def dispatch_task(ws, msg, handle=handle_task, remember=emit_memory):
 
     raw = msg.get("payload", {}) if isinstance(msg, dict) else {}
     payload = raw if isinstance(raw, dict) else {"task": raw}
+
+    # Optionally augment task with RAG context
+    task_text = payload.get("task", "") if isinstance(payload, dict) else str(payload)
+    if rag_retrieve is not None and task_text:
+        try:
+            rag_res = await run_blocking(rag_retrieve, str(task_text)[:200], n=2)
+            if rag_res and isinstance(rag_res, dict):
+                ctx = rag_res.get("context_prompt")
+                if ctx and "(No prior swarm memories" not in ctx:
+                    payload["rag_context"] = ctx
+        except Exception as e:
+            print(f"[OpenClaw] RAG retrieve failed (fail-open): {e}")
+
     result = await run_blocking(handle, payload)
     await ws.send(json.dumps({
         "type":    "TASK_RESULT",
@@ -238,6 +257,52 @@ async def dispatch_task(ws, msg, handle=handle_task, remember=emit_memory):
     if remember is not None:
         excerpt = f"{str(payload)[:1200]}\n---\n{str(result)[:4000]}"
         await run_blocking(remember, "openclaw", "task_result", excerpt, {"kind": "openclaw_task"})
+    return result
+
+
+async def dispatch_swarm_message(ws, msg, handle=handle_task, remember=emit_memory):
+    """Handle peer-to-peer SWARM_MESSAGE (e.g. from Hermes or Orchestrator)."""
+    from_agent = msg.get("from", "unknown")
+    action = msg.get("action", "task")
+    payload = msg.get("payload", {})
+    task_text = payload.get("task") or payload.get("question") or str(payload)
+
+    print(f"[OpenClaw] SWARM P2P from {from_agent} (action: {action}) → {task_text[:60]}")
+    claw_result = await run_blocking(handle, {"task": task_text})
+
+    response_msg = {
+        "type": "SWARM_MESSAGE",
+        "target": from_agent,
+        "from": "openclaw",
+        "action": f"{action}_REPLY",
+        "corrId": msg.get("corrId"),
+        "payload": {
+            "result": claw_result,
+            "system": system_info(),
+        },
+    }
+    await ws.send(json.dumps(response_msg))
+    if remember is not None:
+        await run_blocking(remember, "openclaw", "swarm_collab", f"{task_text}\n---\n{claw_result}", {"peer": from_agent})
+    return claw_result
+
+
+async def dispatch_swarm_task(ws, msg, handle=handle_task, remember=emit_memory):
+    """Handle coordinated multi-agent SWARM_TASK_DISPATCH for OpenClaw."""
+    task_id = msg.get("taskId")
+    goal = msg.get("goal", "")
+    print(f"[OpenClaw] Swarm Task Dispatch {task_id}: {goal[:80]}")
+
+    result = await run_blocking(handle, {"task": goal})
+
+    await ws.send(json.dumps({
+        "type": "SWARM_TASK_CONTRIBUTION",
+        "taskId": task_id,
+        "agent": "openclaw",
+        "contribution": result,
+    }))
+    if remember is not None:
+        await run_blocking(remember, "openclaw", "swarm_task_contrib", str(result), {"taskId": task_id})
     return result
 
 

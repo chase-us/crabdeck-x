@@ -1,5 +1,14 @@
 # CrabDeck v2.1 → v2.2 — Changes
 
+## Swarm Mesh & Collaborative RAG Tech (Post v2.2)
+
+- **Swarm Mesh WebSocket Protocol (`gateway/server.js`)**: Real-time agent peer-to-peer messaging (`SWARM_MESSAGE`), coordinated multi-agent task dispatch (`SWARM_COORDINATE`), and consensus contributions (`SWARM_TASK_CONTRIBUTION`).
+- **Swarm RAG Tech (`vault/app.py`, `vault/vectors.py`)**: Enhanced Shell Cracked vector retrieval engine with `/v1/rag/retrieve`, multi-source citations, similarity filtering, and deterministic cross-agent synthesis.
+- **Collaborative Agents (`agents/hermes_agent.py`, `agents/openclaw_agent.py`)**: Hermes and OpenClaw actively query RAG context, collaborate via P2P mesh messages, and solve multi-agent goals collaboratively.
+- **Swarm Orchestrator (`orchestrator/main.py`)**: Mesh topology monitoring, REST endpoints `/mesh` and `/mesh/tasks`, tracking agent capabilities and swarm task lifecycles.
+- **Interactive Swarm UI (`ui/src/SwarmMeshView.jsx`)**: New "SWARM MESH" view in CrabDeck providing visual node topology, multi-agent mission launching, direct P2P agent messaging, and live collaborative RAG retrieval with citations.
+- **Documentation**: Added `artifacts/SWARM_MESH_RAG.md`.
+
 ## Shell Cracked + bHive (post v2.2)
 
 Persistent memory vault on `:7070`, minute-slot heartbeats, Express `/health`+`/metrics`, Tailwind telemetry tab, and `asyncio.to_thread` offload so the 20s gateway watchdog stays green during Ollama/task I/O. Skills and contracts: `.cursor/skills/`, `artifacts/`, `AGENTS.md`. Details: `artifacts/SPRINT_VAULT_BHIVE.md`.

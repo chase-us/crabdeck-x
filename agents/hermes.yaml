@@ -29,3 +29,8 @@ roles:
     desc: "Routes tool-use requests to appropriate local or remote models"
     listen_events: [TOOL_REQUEST]
     emit_events:   [TOOL_RESULT]
+
+  - id: swarm_mesh_rag
+    desc: "Collaborative RAG participant — synthesizes context from vector memory and coordinates with OpenClaw"
+    listen_events: [SWARM_MESSAGE, SWARM_TASK_DISPATCH, SWARM_BROADCAST]
+    emit_events:   [SWARM_MESSAGE, SWARM_TASK_CONTRIBUTION]

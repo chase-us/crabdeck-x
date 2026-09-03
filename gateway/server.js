@@ -49,12 +49,37 @@ const agentStatus = {
   crabdeck: 'running',
 }
 
+// ── Swarm Mesh Registry & Topology ──────────────────────────────────────────
+// Keeps track of active swarm nodes, their capabilities, peers, and collaboration stats
+const swarmNodes = new Map() // agentRole -> { id, role, capabilities: [], status, connectedAt, lastSeen }
+const swarmTasks = new Map() // taskId -> { id, initiator, goal, assignedTo, status, createdAt, results: {} }
+
+function getMeshTopology() {
+  const nodes = []
+  for (const [role, node] of swarmNodes) {
+    nodes.push({
+      agent: role,
+      status: agentStatus[role] || 'offline',
+      capabilities: node.capabilities || [],
+      connectedAt: node.connectedAt,
+      lastSeen: node.lastSeen,
+    })
+  }
+  return {
+    mesh_size: nodes.length,
+    active_nodes: nodes.filter(n => n.status === 'running').length,
+    nodes,
+    active_tasks: Array.from(swarmTasks.values()).slice(-10),
+  }
+}
+
 function healthPayload() {
   return {
     status:       'ok',
     authRequired: Boolean(GATEWAY_TOKEN),
     clients:      clients.size,
     agentStatus,
+    swarmMesh:    getMeshTopology(),
     bhive_slot:   bhive.minuteSlot(),
     uptime:       process.uptime(),
     vault:        process.env.VAULT_URL || 'http://localhost:7070',
@@ -65,6 +90,7 @@ const app = express()
 app.disable('x-powered-by')
 app.use(express.json({ limit: '32kb' }))
 app.get('/health', (_req, res) => { res.json(healthPayload()) })
+app.get('/mesh', (_req, res) => { res.json(getMeshTopology()) })
 app.get('/metrics', (_req, res) => {
   const now = Date.now()
   const list = []
@@ -76,7 +102,7 @@ app.get('/metrics', (_req, res) => {
       watchdog_miss: bhive.missedWatchdog(c.lastSeen, now),
     })
   }
-  res.json({ agentStatus, clients: list, slot: bhive.minuteSlot(now) })
+  res.json({ agentStatus, clients: list, slot: bhive.minuteSlot(now), mesh: getMeshTopology() })
 })
 
 const httpServer = http.createServer(app)
@@ -175,15 +201,44 @@ wss.on('connection', (ws) => {
 
         if (role === 'openclaw') {
           agentStatus.openclaw = 'running'
+          swarmNodes.set('openclaw', {
+            id,
+            role: 'openclaw',
+            capabilities: msg.capabilities || ['system_exec', 'task_reasoning', 'agent_collab'],
+            status: 'running',
+            connectedAt: Date.now(),
+            lastSeen: Date.now(),
+          })
           broadcast({ type: 'AGENT_STATUS', agent: 'openclaw', status: 'running' })
-          console.log('[openclaw] registered')
+          broadcast({ type: 'SWARM_PEER_JOIN', peer: 'openclaw', topology: getMeshTopology() })
+          console.log('[openclaw] registered in swarm mesh')
         }
         if (role === 'hermes') {
           agentStatus.hermes = 'running'
+          swarmNodes.set('hermes', {
+            id,
+            role: 'hermes',
+            capabilities: msg.capabilities || ['llm_synthesis', 'rag_retrieval', 'tool_routing'],
+            status: 'running',
+            connectedAt: Date.now(),
+            lastSeen: Date.now(),
+          })
           broadcast({ type: 'AGENT_STATUS', agent: 'hermes', status: 'running' })
-          console.log('[hermes] registered')
+          broadcast({ type: 'SWARM_PEER_JOIN', peer: 'hermes', topology: getMeshTopology() })
+          console.log('[hermes] registered in swarm mesh')
         }
-        ws.send(JSON.stringify({ type: 'ACK', clientId: id, role }))
+        if (role === 'orchestrator') {
+          swarmNodes.set('orchestrator', {
+            id,
+            role: 'orchestrator',
+            capabilities: ['topology_monitoring', 'task_coordination', 'health_check'],
+            status: 'running',
+            connectedAt: Date.now(),
+            lastSeen: Date.now(),
+          })
+          broadcast({ type: 'SWARM_PEER_JOIN', peer: 'orchestrator', topology: getMeshTopology() })
+        }
+        ws.send(JSON.stringify({ type: 'ACK', clientId: id, role, mesh: getMeshTopology() }))
         break
       }
 
@@ -227,12 +282,130 @@ wss.on('connection', (ws) => {
           agentStatus[a] = 'running'
           broadcast({ type: 'AGENT_STATUS', agent: a, status: 'running' }, id)
         }
+        if (a && swarmNodes.has(a)) {
+          const node = swarmNodes.get(a)
+          node.lastSeen = Date.now()
+          node.status = 'running'
+        }
         const ts = typeof msg.ts === 'number' ? msg.ts : Date.now() / 1000
         const slot = typeof msg.bhive_slot === 'number' ? msg.bhive_slot : bhive.minuteSlot()
         ws.send(JSON.stringify({ type: 'HEARTBEAT_ACK', ts: Date.now(), bhive_slot: slot }))
         if (a && a !== 'unknown' && a !== 'ui') {
           void ingestHeartbeat({ agent: a, ts, slot, source: 'gateway' })
         }
+        break
+      }
+
+      // ── Swarm Mesh: Point-to-Point Agent Message ──────────────────────────
+      case 'SWARM_MESSAGE': {
+        if (!requireAuthed(client, ws)) break
+        const target = msg.target // e.g. 'hermes', 'openclaw', 'orchestrator'
+        const fromAgent = msg.from || client.role
+        console.log(`[swarm] P2P: ${fromAgent} → ${target} (action: ${msg.action})`)
+        sendTo(target, {
+          type: 'SWARM_MESSAGE',
+          from: fromAgent,
+          target,
+          action: msg.action,
+          payload: msg.payload,
+          corrId: msg.corrId || randomUUID(),
+          ts: Date.now(),
+        })
+        // Also inform UI of swarm interaction event
+        sendTo('ui', {
+          type: 'SWARM_EVENT',
+          kind: 'P2P_MESSAGE',
+          from: fromAgent,
+          target,
+          action: msg.action,
+          payload: msg.payload,
+          ts: Date.now(),
+        })
+        break
+      }
+
+      // ── Swarm Mesh: Swarm Broadcast ───────────────────────────────────────
+      case 'SWARM_BROADCAST': {
+        if (!requireAuthed(client, ws)) break
+        const fromAgent = msg.from || client.role
+        console.log(`[swarm] Broadcast from ${fromAgent}: ${msg.topic}`)
+        broadcast({
+          type: 'SWARM_BROADCAST',
+          from: fromAgent,
+          topic: msg.topic,
+          payload: msg.payload,
+          corrId: msg.corrId || randomUUID(),
+          ts: Date.now(),
+        })
+        break
+      }
+
+      // ── Swarm Mesh: Coordinated Multi-Agent Task ──────────────────────────
+      case 'SWARM_COORDINATE': {
+        if (!requireAuthed(client, ws)) break
+        const taskId = msg.taskId || randomUUID()
+        const goal = msg.goal || msg.payload?.goal || 'Collaborative task'
+        const from = client.role
+        console.log(`[swarm] New coordinated swarm task ${taskId}: "${goal}"`)
+        const taskRecord = {
+          id: taskId,
+          initiator: from,
+          goal,
+          status: 'in_progress',
+          createdAt: Date.now(),
+          results: {},
+        }
+        swarmTasks.set(taskId, taskRecord)
+
+        // Broadcast task dispatch to all agent nodes in the mesh
+        broadcast({
+          type: 'SWARM_TASK_DISPATCH',
+          taskId,
+          goal,
+          initiator: from,
+          assignedAgents: ['hermes', 'openclaw'],
+          payload: msg.payload,
+          ts: Date.now(),
+        })
+        break
+      }
+
+      // ── Swarm Mesh: Agent contribution to coordinated task ────────────────
+      case 'SWARM_TASK_CONTRIBUTION': {
+        if (!requireAuthed(client, ws)) break
+        const { taskId, contribution } = msg
+        const agent = msg.agent || client.role
+        if (taskId && swarmTasks.has(taskId)) {
+          const t = swarmTasks.get(taskId)
+          t.results[agent] = contribution
+          console.log(`[swarm] Task ${taskId} contribution received from ${agent}`)
+
+          // Check if both hermes & openclaw contributed (or all required)
+          const hasHermes = Boolean(t.results.hermes)
+          const hasClaw = Boolean(t.results.openclaw)
+          if (hasHermes && hasClaw) {
+            t.status = 'completed'
+            t.completedAt = Date.now()
+          }
+
+          broadcast({
+            type: 'SWARM_TASK_UPDATE',
+            taskId,
+            task: t,
+            agent,
+            contribution,
+          })
+        }
+        break
+      }
+
+      // ── Swarm Mesh: Request Mesh Topology ─────────────────────────────────
+      case 'GET_MESH_TOPOLOGY': {
+        if (!requireAuthed(client, ws)) break
+        ws.send(JSON.stringify({
+          type: 'MESH_TOPOLOGY',
+          topology: getMeshTopology(),
+        }))
         break
       }
 
@@ -245,9 +418,13 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     const c = clients.get(id)
-    if (c && (c.role === 'openclaw' || c.role === 'hermes')) {
+    if (c && (c.role === 'openclaw' || c.role === 'hermes' || c.role === 'orchestrator')) {
       agentStatus[c.role] = 'offline'
+      if (swarmNodes.has(c.role)) {
+        swarmNodes.get(c.role).status = 'offline'
+      }
       broadcast({ type: 'AGENT_STATUS', agent: c.role, status: 'offline' })
+      broadcast({ type: 'SWARM_PEER_LEAVE', peer: c.role, topology: getMeshTopology() })
     }
     clients.delete(id)
     console.log(`[-] Client ${id} disconnected  (${clients.size} total)`)

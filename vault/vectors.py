@@ -39,7 +39,7 @@ def cosine(a: list[float], b: list[float]) -> float:
 
 class VectorMemory(Protocol):
     def add(self, doc_id: str, text: str, metadata: dict[str, Any]) -> None: ...
-    def query(self, text: str, n: int = 5) -> list[dict[str, Any]]: ...
+    def query(self, text: str, n: int = 5, agent: str | None = None) -> list[dict[str, Any]]: ...
     def count(self) -> int: ...
 
 
@@ -89,7 +89,7 @@ class SqliteVectorMemory:
             )
             self._conn.commit()
 
-    def query(self, text: str, n: int = 5) -> list[dict[str, Any]]:
+    def query(self, text: str, n: int = 5, agent: str | None = None) -> list[dict[str, Any]]:
         if not isinstance(n, int) or n < 1 or n > 50:
             raise ValueError("n must be an int in 1..50")
         target = embed_text(text)
@@ -99,11 +99,14 @@ class SqliteVectorMemory:
             ).fetchall()
         scored: list[dict[str, Any]] = []
         for row in rows:
+            meta = json.loads(row["metadata"])
+            if agent is not None and str(meta.get("agent", "")).lower() != agent.lower():
+                continue
             vec = json.loads(row["embedding"])
             scored.append({
                 "id": row["id"],
                 "text": row["text"],
-                "metadata": json.loads(row["metadata"]),
+                "metadata": meta,
                 "score": cosine(target, vec),
             })
         scored.sort(key=lambda item: item["score"], reverse=True)
@@ -146,12 +149,19 @@ class ChromaMemory:
         safe_meta = {str(k): (v if isinstance(v, (str, int, float, bool)) else str(v)) for k, v in meta.items()}
         self._col.upsert(ids=[doc_id.strip()], documents=[text], metadatas=[safe_meta])
 
-    def query(self, text: str, n: int = 5) -> list[dict[str, Any]]:
+    def query(self, text: str, n: int = 5, agent: str | None = None) -> list[dict[str, Any]]:
         if not isinstance(n, int) or n < 1 or n > 50:
             raise ValueError("n must be an int in 1..50")
         if self._col.count() == 0:
             return []
-        result = self._col.query(query_texts=[text], n_results=min(n, self._col.count()))
+        where_filter = {"agent": {"$eq": agent.lower()}} if agent else None
+        query_kwargs: dict[str, Any] = {
+            "query_texts": [text],
+            "n_results": min(n, self._col.count()),
+        }
+        if where_filter:
+            query_kwargs["where"] = where_filter
+        result = self._col.query(**query_kwargs)
         ids = (result.get("ids") or [[]])[0]
         docs = (result.get("documents") or [[]])[0]
         metas = (result.get("metadatas") or [[]])[0]

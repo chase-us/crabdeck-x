@@ -15,7 +15,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import time, threading, asyncio, os, psutil, uuid, json, urllib.error, urllib.request
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import websockets
 
 # ── Config ────────────────────────────────────────────────────────────────────
@@ -40,6 +40,30 @@ class Agent(BaseModel):
     error_message:   Optional[str] = None
     auto_restart:    bool = True
     team:            str = "crabdeck"
+    capabilities:    List[str] = []
+    mesh_role:       str = "worker"
+
+
+class SwarmTaskRequest(BaseModel):
+    goal: str
+    initiator: str = "orchestrator"
+    parameters: Optional[Dict[str, Any]] = None
+
+
+class SwarmTaskStatus(BaseModel):
+    task_id: str
+    goal: str
+    status: str
+    results: Dict[str, Any] = {}
+    created_at: float
+
+
+class SwarmMeshTopology(BaseModel):
+    mesh_size: int
+    active_nodes: int
+    agents: List[Agent]
+    rag_vault_status: str
+    tasks: List[Dict[str, Any]] = []
 
 class Event(BaseModel):
     id:        str
@@ -63,11 +87,31 @@ def add_event(event_type: str, message: str, agent_id: Optional[str] = None):
 
 def seed_agents():
     now = time.time()
-    for agent_id, name in [("crabdeck", "CrabDeck Gateway"),
-                            ("openclaw", "OpenClaw Sovereign"),
-                            ("hermes",   "Hermes Messenger")]:
-        agents[agent_id] = Agent(id=agent_id, name=name, status="offline", last_heartbeat=now)
-    add_event("SYSTEM", "Team CrabDeck agents seeded", None)
+    agents["crabdeck"] = Agent(
+        id="crabdeck",
+        name="CrabDeck Gateway",
+        status="offline",
+        last_heartbeat=now,
+        capabilities=["websocket_mesh_bus", "p2p_routing", "watchdog_monitoring"],
+        mesh_role="hub",
+    )
+    agents["openclaw"] = Agent(
+        id="openclaw",
+        name="OpenClaw Sovereign",
+        status="offline",
+        last_heartbeat=now,
+        capabilities=["system_exec", "task_reasoning", "agent_collab"],
+        mesh_role="node",
+    )
+    agents["hermes"] = Agent(
+        id="hermes",
+        name="Hermes Messenger",
+        status="offline",
+        last_heartbeat=now,
+        capabilities=["llm_synthesis", "rag_retrieval", "tool_routing"],
+        mesh_role="node",
+    )
+    add_event("SYSTEM", "Team CrabDeck swarm mesh agents seeded", None)
 
 def heartbeat_loop():
     while True:
@@ -119,34 +163,64 @@ async def orchestrator_heartbeat(ws):
         await asyncio.to_thread(emit_vault_heartbeat, "orchestrator")
 
 
+# ── Swarm Mesh State ────────────────────────────────────────────────────────
+active_swarm_tasks: Dict[str, Dict[str, Any]] = {}
+gateway_ws_conn = None
+
 async def listen_gateway():
+    global gateway_ws_conn
     while True:
         try:
             async with websockets.connect(GATEWAY_URL) as ws:
+                gateway_ws_conn = ws
                 hello = {"type": "HELLO", "client": "orchestrator"}
                 if GATEWAY_TOKEN:
                     hello["token"] = GATEWAY_TOKEN
                 await ws.send(json.dumps(hello))
-                add_event("SYSTEM", "Connected to CrabDeck Gateway", None)
+                add_event("SYSTEM", "Connected to CrabDeck Gateway Swarm Mesh", None)
                 hb_task = asyncio.create_task(orchestrator_heartbeat(ws))
                 try:
                     async for raw in ws:
                         try:
                             msg = json.loads(raw)
-                            if msg.get("type") == "ERROR":
+                            mtype = msg.get("type")
+                            if mtype == "ERROR":
                                 add_event("SYSTEM", f"Gateway auth error: {msg.get('message')}", None)
-                            if msg.get("type") == "AGENT_STATUS":
+                            elif mtype == "AGENT_STATUS":
                                 agent_id = msg.get("agent")
                                 status   = msg.get("status", "offline")
                                 if agent_id in agents:
                                     agents[agent_id].status         = status
                                     agents[agent_id].last_heartbeat = time.time()
                                     add_event("AGENT_STATUS", f"{agent_id} → {status}", agent_id)
+                            elif mtype == "SWARM_PEER_JOIN":
+                                peer = msg.get("peer")
+                                add_event("SWARM_PEER_JOIN", f"Peer {peer} joined swarm mesh", peer)
+                            elif mtype == "SWARM_TASK_DISPATCH":
+                                tid = msg.get("taskId")
+                                if tid:
+                                    active_swarm_tasks[tid] = {
+                                        "taskId": tid,
+                                        "goal": msg.get("goal"),
+                                        "status": "in_progress",
+                                        "results": {},
+                                        "createdAt": msg.get("ts", time.time()),
+                                    }
+                                    add_event("SWARM_TASK", f"Swarm task dispatched: {msg.get('goal')}", None)
+                            elif mtype == "SWARM_TASK_UPDATE":
+                                tid = msg.get("taskId")
+                                if tid and tid in active_swarm_tasks:
+                                    active_swarm_tasks[tid]["results"][msg.get("agent")] = msg.get("contribution")
+                                    if len(active_swarm_tasks[tid]["results"]) >= 2:
+                                        active_swarm_tasks[tid]["status"] = "completed"
+                                    add_event("SWARM_CONTRIBUTION", f"{msg.get('agent')} contributed to {tid}", msg.get("agent"))
                         except Exception:
                             pass
                 finally:
                     hb_task.cancel()
+                    gateway_ws_conn = None
         except Exception as e:
+            gateway_ws_conn = None
             add_event("SYSTEM", f"Gateway disconnected: {e} — retrying in 5 s", None)
             await asyncio.sleep(5)
 
@@ -210,6 +284,55 @@ def restart_agent(agent_id: str):
 @app.get("/events", response_model=List[Event])
 def get_events(limit: int = 100):
     return events[-limit:]
+
+# ── Swarm Mesh REST Endpoints ─────────────────────────────────────────────────
+@app.get("/mesh", response_model=SwarmMeshTopology)
+def get_mesh():
+    active = [a for a in agents.values() if a.status == "running"]
+    return SwarmMeshTopology(
+        mesh_size=len(agents),
+        active_nodes=len(active),
+        agents=list(agents.values()),
+        rag_vault_status="configured",
+        tasks=list(active_swarm_tasks.values())[-10:],
+    )
+
+@app.post("/mesh/tasks", response_model=Dict[str, Any])
+async def trigger_swarm_task(req: SwarmTaskRequest):
+    if not req.goal or not req.goal.strip():
+        raise HTTPException(status_code=400, detail="goal must be non-empty")
+    task_id = f"task-{uuid.uuid4().hex[:8]}"
+    task_entry = {
+        "taskId": task_id,
+        "goal": req.goal.strip(),
+        "initiator": req.initiator,
+        "status": "in_progress",
+        "results": {},
+        "createdAt": time.time(),
+    }
+    active_swarm_tasks[task_id] = task_entry
+    add_event("SWARM_TASK_INITIATED", f"Task {task_id}: {req.goal.strip()}", None)
+
+    # If gateway ws is connected, broadcast coordinate message
+    if gateway_ws_conn is not None:
+        try:
+            await gateway_ws_conn.send(json.dumps({
+                "type": "SWARM_COORDINATE",
+                "taskId": task_id,
+                "goal": req.goal.strip(),
+                "payload": req.parameters or {},
+            }))
+        except Exception as e:
+            add_event("SWARM_ERROR", f"Failed to dispatch to gateway: {e}", None)
+
+    return {"task_id": task_id, "status": "in_progress", "goal": req.goal.strip()}
+
+@app.get("/mesh/tasks/{task_id}")
+def get_swarm_task(task_id: str):
+    t = active_swarm_tasks.get(task_id)
+    if not t:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return t
 
 if __name__ == "__main__":
     import uvicorn

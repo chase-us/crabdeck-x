@@ -21,6 +21,9 @@ agents:
     tools: ["powershell_executor", "blueprint_manager"]
     gateway_events:
       - TASK
+      - SWARM_MESSAGE
+      - SWARM_TASK_DISPATCH
+      - SWARM_BROADCAST
 
   - id: memory_logger
     role: "Persistent Memory Agent"

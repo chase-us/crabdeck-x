@@ -20,7 +20,7 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
-from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
+from vault_client import emit_heartbeat, emit_memory, heartbeat_payload, query_rag
 
 GATEWAY_URL      = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN    = os.environ.get("GATEWAY_TOKEN")  # None in local/dev mode
@@ -100,6 +100,12 @@ async def run():
                         await dispatch_prompt(ws, msg)
                     elif mtype == "TOOL_REQUEST":
                         await dispatch_tool_request(ws, msg)
+                    elif mtype == "SWARM_MESSAGE":
+                        await dispatch_swarm_message(ws, msg)
+                    elif mtype == "SWARM_TASK_DISPATCH":
+                        await dispatch_swarm_task(ws, msg)
+                    elif mtype == "SWARM_BROADCAST":
+                        print(f"[Hermes] Swarm Broadcast from {msg.get('from')}: {msg.get('topic')}")
                     elif mtype == "ERROR":
                         print(f"[Hermes] Gateway error: {msg.get('message')}")
 
@@ -116,8 +122,8 @@ async def run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-async def dispatch_prompt(ws, msg, generate=ollama_generate, remember=emit_memory):
-    """Handle a PROMPT without blocking the event loop (gateway watchdog: 20s)."""
+async def dispatch_prompt(ws, msg, generate=ollama_generate, remember=emit_memory, rag_retrieve=query_rag):
+    """Handle a PROMPT with optional RAG retrieval without blocking the event loop (gateway watchdog: 20s)."""
     if generate is None or not callable(generate):
         raise TypeError("dispatch_prompt requires a callable generate")
     if remember is not None and not callable(remember):
@@ -126,24 +132,109 @@ async def dispatch_prompt(ws, msg, generate=ollama_generate, remember=emit_memor
     raw = msg.get("payload", {}) if isinstance(msg, dict) else {}
     prompt  = raw.get("prompt", "") if isinstance(raw, dict) else str(raw)
     model   = raw.get("model", DEFAULT_MODEL) if isinstance(raw, dict) else DEFAULT_MODEL
+    use_rag = raw.get("rag", True) if isinstance(raw, dict) else True
     if not isinstance(prompt, str):
         prompt = str(prompt)
     if not isinstance(model, str) or not model.strip():
         model = DEFAULT_MODEL
 
     print(f"[Hermes] PROMPT ({model}) → {prompt[:80]}…")
-    reply = await run_blocking(generate, prompt, model)
+
+    # Swarm RAG Retrieval step
+    rag_context = ""
+    citations = []
+    if use_rag and rag_retrieve is not None:
+        try:
+            rag_data = await run_blocking(rag_retrieve, prompt, n=3, synthesize=True)
+            if rag_data and isinstance(rag_data, dict):
+                rag_context = rag_data.get("context_prompt", "")
+                citations = rag_data.get("citations", [])
+        except Exception as e:
+            print(f"[Hermes] RAG retrieval skipped: {e}")
+
+    final_prompt = prompt
+    if rag_context and "(No prior swarm memories" not in rag_context:
+        final_prompt = f"Context from CrabDeck Swarm Vault:\n{rag_context}\n\nUser Question:\n{prompt}"
+
+    reply = await run_blocking(generate, final_prompt, model)
     print(f"[Hermes] RESPONSE → {str(reply)[:80]}…")
 
     await ws.send(json.dumps({
-        "type":    "HERMES_RESPONSE",
-        "agent":   "hermes",
-        "payload": reply,
+        "type":      "HERMES_RESPONSE",
+        "agent":     "hermes",
+        "payload":   reply,
+        "citations": citations,
     }))
     if remember is not None:
         excerpt = f"{prompt[:1200]}\n---\n{str(reply)[:4000]}"
-        await run_blocking(remember, "hermes", "prompt_result", excerpt, {"model": model})
+        await run_blocking(remember, "hermes", "prompt_result", excerpt, {"model": model, "has_rag": bool(rag_context)})
     return reply
+
+
+async def dispatch_swarm_message(ws, msg, generate=ollama_generate, remember=emit_memory, rag_retrieve=query_rag):
+    """Handle peer-to-peer SWARM_MESSAGE (e.g. from OpenClaw or Orchestrator)."""
+    from_agent = msg.get("from", "unknown")
+    action = msg.get("action", "query")
+    payload = msg.get("payload", {})
+    query_text = payload.get("query") or payload.get("question") or str(payload)
+
+    print(f"[Hermes] SWARM P2P from {from_agent} (action: {action}) → {query_text[:60]}")
+
+    # RAG retrieve context if asked
+    rag_info = None
+    if rag_retrieve is not None:
+        rag_info = await run_blocking(rag_retrieve, query_text, n=3)
+
+    context_str = rag_info.get("context_prompt", "") if (rag_info and isinstance(rag_info, dict)) else ""
+    hermes_synthesis = await run_blocking(
+        generate,
+        f"You are Hermes collaborating with {from_agent} in the CrabDeck swarm mesh.\nContext: {context_str}\nTask: {query_text}\nAnswer concisely:",
+    )
+
+    # Respond back to the peer via SWARM_MESSAGE or SWARM_RESPONSE
+    response_msg = {
+        "type": "SWARM_MESSAGE",
+        "target": from_agent,
+        "from": "hermes",
+        "action": f"{action}_REPLY",
+        "corrId": msg.get("corrId"),
+        "payload": {
+            "answer": hermes_synthesis,
+            "citations": rag_info.get("citations", []) if (rag_info and isinstance(rag_info, dict)) else [],
+        },
+    }
+    await ws.send(json.dumps(response_msg))
+    if remember is not None:
+        await run_blocking(remember, "hermes", "swarm_collab", f"{query_text}\n---\n{hermes_synthesis}", {"peer": from_agent})
+    return hermes_synthesis
+
+
+async def dispatch_swarm_task(ws, msg, generate=ollama_generate, remember=emit_memory, rag_retrieve=query_rag):
+    """Handle a coordinated multi-agent SWARM_TASK_DISPATCH."""
+    task_id = msg.get("taskId")
+    goal = msg.get("goal", "")
+    print(f"[Hermes] Swarm Task Dispatch {task_id}: {goal[:80]}")
+
+    # Retrieve RAG context for the swarm goal
+    rag_ctx = ""
+    if rag_retrieve is not None:
+        rag_res = await run_blocking(rag_retrieve, goal, n=3)
+        if rag_res and isinstance(rag_res, dict):
+            rag_ctx = rag_res.get("context_prompt", "")
+
+    prompt = f"You are Hermes collaborating on swarm task: '{goal}'.\nRAG Context: {rag_ctx}\nSynthesize an analytical solution/plan:"
+    analysis = await run_blocking(generate, prompt)
+
+    # Send contribution
+    await ws.send(json.dumps({
+        "type": "SWARM_TASK_CONTRIBUTION",
+        "taskId": task_id,
+        "agent": "hermes",
+        "contribution": analysis,
+    }))
+    if remember is not None:
+        await run_blocking(remember, "hermes", "swarm_task_contrib", analysis, {"taskId": task_id})
+    return analysis
 
 
 def _tool_request_payload(msg):

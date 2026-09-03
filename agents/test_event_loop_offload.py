@@ -204,11 +204,59 @@ class HeartbeatOffloadTests(unittest.IsolatedAsyncioTestCase):
             {"payload": {"prompt": "status", "model": "llama3"}},
             generate=lambda prompt, model: "green",
             remember=lambda *args: remembered.append(args) or True,
+            rag_retrieve=lambda *args, **kwargs: None,
         )
         self.assertEqual(len(remembered), 1)
         self.assertEqual(remembered[0][0], "hermes")
         self.assertEqual(remembered[0][1], "prompt_result")
         self.assertIn("status", remembered[0][2])
+
+    async def test_hermes_rag_collab_dispatch(self) -> None:
+        from hermes_agent import dispatch_prompt, dispatch_swarm_message
+
+        ws = AsyncMock()
+        mock_rag = lambda query, **kwargs: {
+            "context_prompt": "[1] (openclaw / task_result): System metrics nominal",
+            "citations": [{"source_id": "[1]", "agent": "openclaw", "excerpt": "metrics nominal"}],
+        }
+        res = await dispatch_prompt(
+            ws,
+            {"payload": {"prompt": "system health check", "model": "llama3"}},
+            generate=lambda prompt, model: f"Evaluated with context: {prompt[:30]}",
+            remember=None,
+            rag_retrieve=mock_rag,
+        )
+        self.assertIn("Evaluated with context", res)
+        sent = ws.send.await_args.args[0]
+        self.assertIn('"citations"', sent)
+
+        # Swarm message P2P test
+        p2p_res = await dispatch_swarm_message(
+            ws,
+            {"from": "openclaw", "action": "PEER_QUERY", "payload": {"question": "Can you summarize?"}},
+            generate=lambda prompt, model=None: "Summary provided",
+            remember=None,
+            rag_retrieve=mock_rag,
+        )
+        self.assertEqual(p2p_res, "Summary provided")
+        sent_p2p = ws.send.await_args.args[0]
+        self.assertIn('"action": "PEER_QUERY_REPLY"', sent_p2p)
+        self.assertIn('"target": "openclaw"', sent_p2p)
+
+    async def test_openclaw_swarm_message_dispatch(self) -> None:
+        from openclaw_agent import dispatch_swarm_message
+
+        ws = AsyncMock()
+        res = await dispatch_swarm_message(
+            ws,
+            {"from": "hermes", "action": "EXEC_TASK", "payload": {"task": "check status"}},
+            handle=lambda payload: f"handled:{payload['task']}",
+            remember=None,
+        )
+        self.assertEqual(res, "handled:check status")
+        sent = ws.send.await_args.args[0]
+        self.assertIn('"target": "hermes"', sent)
+        self.assertIn('"action": "EXEC_TASK_REPLY"', sent)
 
 
 if __name__ == "__main__":

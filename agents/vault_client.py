@@ -94,4 +94,24 @@ def emit_memory(agent: str, kind: str, text: str, metadata: dict[str, Any] | Non
         "text": text[:8000],
         "metadata": metadata if isinstance(metadata, dict) else {},
     }
-    return _post("/v1/memory", payload) is not None
+def query_rag(
+    query_text: str,
+    n: int = 5,
+    agent: str | None = None,
+    min_score: float = 0.0,
+    synthesize: bool = False,
+    timeout: float = 2.0,
+) -> dict[str, Any] | None:
+    """Retrieve grounded swarm RAG context across agents from the Shell Cracked vault."""
+    if not isinstance(query_text, str) or not query_text.strip():
+        return None
+    payload: dict[str, Any] = {
+        "query": query_text.strip(),
+        "n": max(1, min(50, n)),
+        "min_score": float(min_score),
+        "synthesize": bool(synthesize),
+    }
+    if agent is not None and isinstance(agent, str) and agent.strip():
+        payload["agent"] = agent.strip().lower()
+    return _post("/v1/rag/retrieve", payload, timeout=timeout)
+

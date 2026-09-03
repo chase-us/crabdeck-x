@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Telemetry from './Telemetry.jsx'
+import SwarmMeshView from './SwarmMeshView.jsx'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // These now actually read ui/.env.local (written by the installer) instead of
@@ -84,6 +85,18 @@ export default function CrabDeck() {
         if (msg.type === 'HERMES_RESPONSE') {
           setHermesReply(String(msg.payload ?? ''))
           setHermesLoading(false)
+          if (msg.citations && msg.citations.length > 0) {
+            log(`⚡ Hermes cited ${msg.citations.length} RAG sources: ${msg.citations.map(c => c.agent).join(', ')}`, '#a78bfa')
+          }
+        }
+        if (msg.type === 'SWARM_EVENT') {
+          log(`🕸️ [Swarm] ${msg.from} → ${msg.target} (${msg.action})`, '#f59e0b')
+        }
+        if (msg.type === 'SWARM_TASK_DISPATCH') {
+          log(`🚀 [Swarm Mission] Dispatched: ${msg.goal}`, '#38bdf8')
+        }
+        if (msg.type === 'SWARM_TASK_UPDATE') {
+          log(`✅ [Swarm Contribution] ${msg.agent} contributed to ${msg.taskId}`, '#34d399')
         }
         if (msg.type === 'TASK_RESULT') {
           const result = msg.payload?.result ?? JSON.stringify(msg.payload)
@@ -248,7 +261,7 @@ export default function CrabDeck() {
             return (
               <div key={a.id} style={{ background:'#0a1628', border:`1px solid ${ok ? a.color + '44' : '#1e3a5f'}`,
                                        borderRadius:8, padding:'10px 12px', cursor:'pointer' }}
-                   onClick={() => setActiveTab(a.id === 'crabdeck' ? 'telemetry' : a.id)}>
+                   onClick={() => setActiveTab(a.id === 'crabdeck' ? 'swarm' : a.id)}>
                 <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                   <span style={{ fontSize:18 }}>{a.icon}</span>
                   <span style={{ color: ok ? a.color : '#64748b', fontWeight:'bold', fontSize:13 }}>{a.label}</span>
@@ -281,6 +294,7 @@ export default function CrabDeck() {
                         borderBottom:'1px solid #1e3a5f', background:'#06111f' }}>
             <button style={tabStyle('hermes')}  onClick={() => setActiveTab('hermes')}>⚡ HERMES</button>
             <button style={tabStyle('openclaw')} onClick={() => setActiveTab('openclaw')}>🦅 OPENCLAW</button>
+            <button style={tabStyle('swarm')} onClick={() => setActiveTab('swarm')}>🕸️ SWARM MESH</button>
             <button style={tabStyle('telemetry')} onClick={() => setActiveTab('telemetry')}>📡 TELEMETRY</button>
             <button style={tabStyle('system')}  onClick={() => setActiveTab('system')}>📜 SYSTEM LOG</button>
           </div>
@@ -357,6 +371,12 @@ export default function CrabDeck() {
                   🦅 Send
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'swarm' && (
+            <div style={{ flex:1, overflow:'hidden', minHeight:0 }}>
+              <SwarmMeshView wsRef={wsRef} log={log} />
             </div>
           )}
 
