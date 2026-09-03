@@ -1,13 +1,13 @@
 {
   "name": "crabdeck-gateway",
-  "version": "2.2.0",
-  "description": "CrabDeck WebSocket agent bus — bridges UI, Hermes, and OpenClaw",
+  "version": "2.3.0",
+  "description": "CrabDeck WebSocket agent bus — swarm mesh for UI, Hermes, Scribe, and OpenClaw",
   "main": "server.js",
   "type": "commonjs",
   "scripts": {
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node --test test_bhive.js"
+    "test": "node --test test_bhive.js test_mesh.js test_server_mesh.js"
   },
   "dependencies": {
     "express": "^4.21.2",
