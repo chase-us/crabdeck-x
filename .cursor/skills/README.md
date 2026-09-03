@@ -10,6 +10,7 @@ Read the matching `SKILL.md` before changing that subsystem.
 | [crabdeck-bhive](crabdeck-bhive/SKILL.md) | Changing heartbeat payload, slots, or watchdog |
 | [crabdeck-shell-cracked](crabdeck-shell-cracked/SKILL.md) | Extending the memory vault or vector backends |
 | [crabdeck-payload-hardening](crabdeck-payload-hardening/SKILL.md) | Accepting client/tool JSON on any ingress |
+| [crabdeck-swarm-mesh](crabdeck-swarm-mesh/SKILL.md) | Multi-agent rounds, RAG seeding, peer-to-peer MESH frames, Swarm tab |
 | [crabdeck-operator-console](crabdeck-operator-console/SKILL.md) | Changing the UI, Vite proxies, or telemetry |
 
 Companion artifacts live in [`/artifacts`](../../artifacts/).

@@ -14,6 +14,7 @@ FastAPI service on **:7070**. Persistent agent state and vector memory so a proc
 3. Hash embeddings are **not** semantic. Tests that expect ranking must query the **exact stored text**, not a paraphrase.
 4. Public routes that mutate require `VAULT_TOKEN` when set (`X-Vault-Token` or `Bearer`).
 5. Validate agent ids with `validate_agent`. Do not invent swarm members.
+   Memory `kind`s in use: `prompt_result` (hermes), `task_result` (openclaw), `swarm_result` (gateway writes as `crabdeck`), `mesh_note` (peer-to-peer tells). Swarm transcripts persist as sessions `swarm:<id>`.
 6. Tests inject `SqliteVault` + `SqliteVectorMemory` into `create_app(store=..., vectors=..., vault_token=...)`. Do not point tests at `vault/data/`.
 7. `vault/data/` is gitignored.
 

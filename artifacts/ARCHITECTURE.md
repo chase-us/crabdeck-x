@@ -26,7 +26,16 @@ Snapshot after the Shell Cracked + bHive sprint. This is the v2.2 ws-gateway sta
               Hermes     OpenClaw      Orchestrator :8000
               Ollama     TASK/opt-in   health + AGENT_STATUS
               :11434     shell
+                 ╲          │          ╱
+                  ╲   swarm mesh      ╱     SWARM_ROUND fan-out · SWARM_PEER echo
+                   ╲  (via gateway)  ╱      MESH peer↔peer · Hermes synthesizes
+                    ╲───────┼───────╱       result → vault swarm_result (RAG seed
+                            ▼                for the next swarm)
 ```
+
+## Swarm mesh
+
+The gateway is still the only socket hop, but agent roles now behave as a mesh: a `SWARM_TASK` is retrieved against the vault (RAG seed), fanned out to every connected peer as `SWARM_ROUND`, each contribution is echoed to the other peers and rolled into the next round, and Hermes synthesizes the final `SWARM_RESULT`, which is written back into Shell Cracked. Addressed `MESH` frames let any peer ask another directly. Contract: `SWARM_MESH_PROTOCOL.md`. UI: the Swarm tab.
 
 ## Trust boundaries
 
@@ -47,6 +56,6 @@ Snapshot after the Shell Cracked + bHive sprint. This is the v2.2 ws-gateway sta
 ## Related files
 
 - Skills: `.cursor/skills/`
-- Protocol: `artifacts/BHIVE_PROTOCOL.md`
+- Protocol: `artifacts/BHIVE_PROTOCOL.md`, `artifacts/SWARM_MESH_PROTOCOL.md`
 - Vault HTTP: `artifacts/SHELL_CRACKED_API.md`
 - Operator: `artifacts/OPERATOR_RUNBOOK.md`

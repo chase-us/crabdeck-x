@@ -14,6 +14,7 @@ You are working in **crabdeck-x**, the Hermes + OpenClaw + Shell Cracked stack a
 - Heartbeats include `bhive_slot`. Python slots are unix **seconds** // 60. Node `minuteSlot` is **ms**.
 - `ENABLE_SHELL_EXEC` stays `"0"` unless the operator explicitly opts in with an allowlist.
 - Vault ingest is fail-open. Do not let a down `:7070` starve the gateway loop.
+- Swarm round/quorum rules stay pure in `gateway/swarm.js`; peer prompt/dispatch logic stays shared in `agents/swarm.py`. OpenClaw never executes during a swarm round.
 - Do not treat this VM as the production Cloudflare origin.
 
 ## Verify
@@ -21,6 +22,7 @@ You are working in **crabdeck-x**, the Hermes + OpenClaw + Shell Cracked stack a
 ```bash
 python3 -m unittest discover -s vault
 python3 -m unittest discover -s agents
+python3 -m unittest discover -s orchestrator
 (cd gateway && npm test)
 (cd ui && npm run build)
 ```

@@ -42,6 +42,8 @@ Browser ──WS HELLO+token──► Gateway :8765
 
 Hermes/OpenClaw also POST vault heartbeats and memory from worker threads via `run_blocking`.
 
+Swarm mesh (`SWARM_TASK` → `SWARM_ROUND` fan-out → `SWARM_CONTRIBUTION`/`SWARM_PEER` → `SWARM_SYNTHESIS` → `SWARM_RESULT`, plus addressed `MESH` frames) rides the same bus; see `crabdeck-swarm-mesh`.
+
 ## Security defaults (do not weaken)
 
 - `ENABLE_SHELL_EXEC=0`

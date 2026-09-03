@@ -1,11 +1,17 @@
-# 🦀 CrabDeck v2.2 — Hermes + OpenClaw Edition
+# 🦀 CrabDeck v2.3 — Swarm Mesh Edition
 
 Installable, single-command launcher for the full CrabDeck stack:
 **Gateway → Vault (Shell Cracked) → Orchestrator → Hermes (Ollama LLM) → OpenClaw (Sovereign Agent) → React UI**
 
 Agent/operator playbooks from this stack live in [`.cursor/skills/`](.cursor/skills/) and [`artifacts/`](artifacts/). Coding agents should start at [`AGENTS.md`](AGENTS.md).
 
-> **v2.2** hardens v2.1 for publication: the gateway now requires a shared
+> **v2.3** turns the agents into a swarm mesh: one goal fans out to every
+> connected agent, seeded with retrieved Shell Cracked memory (RAG); peers
+> see and build on each other's contributions across rounds; Hermes
+> synthesizes; the result is written back to the vault so the next swarm
+> starts warmer. See [`artifacts/SWARM_MESH_PROTOCOL.md`](artifacts/SWARM_MESH_PROTOCOL.md).
+>
+> **v2.2** hardened v2.1 for publication: the gateway requires a shared
 > auth token, OpenClaw's shell execution is off by default, and CORS is
 > locked to a real origin list instead of `*`. See `SECURITY.md` before you
 > point a public domain at this.
@@ -86,7 +92,41 @@ Health REST:
   UI → GET /api/agents → Orchestrator :8000
   UI → GET /vault/health → Vault :7070
   UI → GET /gw/health → Gateway :8765
+  UI → GET /gw/swarm → Gateway :8765 (swarm sessions)
 ```
+
+---
+
+## 🕸 Swarm Mesh (RAG-grounded multi-agent collaboration)
+
+Every connected agent role — **Hermes**, **OpenClaw**, **Orchestrator** — is a
+mesh peer. From the **SWARM** tab (or any authenticated client), send a goal:
+
+```
+UI ──SWARM_TASK──▶ Gateway
+      │ RAG: GET /v1/memory/query?q=<goal>  (Shell Cracked, fail-open)
+      ├─SWARM_ROUND 1 + context ──▶ Hermes · OpenClaw · Orchestrator
+      │   each peer also retrieves its own vault memory, then answers
+      │   SWARM_CONTRIBUTION ──▶ echoed to the other peers as SWARM_PEER
+      ├─SWARM_ROUND 2 (round-1 contributions attached) ──▶ peers critique & converge
+      ├─SWARM_SYNTHESIZE ──▶ Hermes ──SWARM_SYNTHESIS──▶
+      └─SWARM_RESULT ──▶ UI + peers, and
+          POST /v1/memory kind=swarm_result   ← becomes RAG context for the next swarm
+          POST /v1/session swarm:<id>         ← durable transcript
+```
+
+- **Rounds:** 1–4 (default 2). A round closes when every peer has answered or after
+  `SWARM_ROUND_TIMEOUT_MS` (45 s); silent peers are recorded, not blocking.
+- **Peer-to-peer:** any agent can send `MESH {to, payload:{intent:"ask"|"tell", text}}`;
+  `ask` gets a generated reply, `tell` is stored as `mesh_note` memory. The UI shows traffic.
+- **Roles:** Hermes contributes and synthesizes; OpenClaw contributes *advisory only*
+  (no `<CMD>` execution path during a swarm, regardless of `ENABLE_SHELL_EXEC`);
+  the Orchestrator contributes a deterministic live health digest (no LLM).
+- **Memory compounds:** run a swarm twice on a related goal and the second one's RAG
+  panel shows the first one's synthesis.
+
+Gateway env: `SWARM_RAG_HITS` (5), `SWARM_RAG_MIN_SCORE` (0 — raise only with a semantic
+vector backend), `SWARM_ROUND_TIMEOUT_MS` (45000). HTTP: `GET /swarm`, `GET /swarm/:id`.
 
 ---
 
@@ -99,6 +139,8 @@ Health REST:
   `crabdeck` model if it's been built, falls back to whatever's installed)
 - Heartbeats every 10 s with `bhive_slot`; vault ingest is fail-open off the event loop
 - Prompt results are stored in Shell Cracked vector memory when the vault is up
+- Swarm peer: answers `SWARM_ROUND` with RAG-grounded contributions, **synthesizes** the
+  final `SWARM_RESULT`, answers `MESH` asks from other agents
 
 ### 🦅 OpenClaw — `agents/openclaw_agent.py`
 - Connects to Gateway as `openclaw` (authenticates with `GATEWAY_TOKEN`)
@@ -107,6 +149,13 @@ Health REST:
 - Integrates with OpenClaw.app REST API if running on port 3131
 - Reports `TASK_RESULT` back to the UI
 - Heartbeats every 10 s with `bhive_slot`; task excerpts go to the vault when reachable
+- Swarm peer: contributes the actions/risks view each round via a plain completion —
+  swarm rounds never execute commands
+
+### 🧭 Orchestrator — `orchestrator/main.py`
+- FastAPI health tracker (`/agents`, `/events`) and gateway bridge
+- Swarm peer without an LLM: contributes a deterministic health digest (agent status,
+  watchdog misses, recent events) so the LLM peers reason against live facts
 
 ---
 
@@ -130,19 +179,22 @@ Health REST:
 CrabDeck/
 ├── AGENTS.md                      ← coding-agent entry
 ├── SECURITY.md                    ← read before deploying publicly
-├── artifacts/                     ← architecture, bHive, vault API, runbook
+├── artifacts/                     ← architecture, bHive, swarm mesh, vault API, runbook
 ├── .cursor/skills/                ← reusable subsystem skills
 ├── .cursor/rules/                 ← always-on CrabDeck guardrails
 ├── installer/
 │   ├── Install-CrabDeck.ps1       ← Windows installer (generates GATEWAY_TOKEN)
 │   └── Install-CrabDeck-Linux.sh  ← Linux/WSL installer
 ├── ui/                            React + Vite frontend
-│   ├── src/CrabDeck.jsx           Main app (Hermes + OpenClaw + Telemetry)
+│   ├── src/CrabDeck.jsx           Main app (Hermes + OpenClaw + Swarm + Telemetry)
+│   ├── src/Swarm.jsx              Swarm mesh tab (roster, rounds, RAG seed, synthesis)
 │   ├── src/Telemetry.jsx          bHive / vault / gateway watch
 │   ├── .env.example
 │   └── .env.local                 (created by installer)
 ├── gateway/
-│   ├── server.js                  WebSocket agent bus (token-authed)
+│   ├── server.js                  WebSocket agent bus (token-authed) + swarm routing
+│   ├── swarm.js                   Swarm session state machine (pure, tested)
+│   ├── vault_client.js            Fail-open vault: heartbeat, RAG query, memory, session
 │   ├── package.json
 │   └── .env.example
 ├── orchestrator/
@@ -158,6 +210,7 @@ CrabDeck/
 ├── agents/
 │   ├── hermes_agent.py
 │   ├── openclaw_agent.py
+│   ├── swarm.py                   Shared mesh peer logic (RAG prompts, dispatch)
 │   ├── hermes.yaml
 │   ├── openclaw.yaml
 │   ├── requirements.txt           websockets + requests

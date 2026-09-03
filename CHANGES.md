@@ -1,5 +1,9 @@
 # CrabDeck v2.1 → v2.2 — Changes
 
+## Swarm mesh + RAG (v2.3)
+
+All connected agents now collaborate as a mesh instead of answering the UI one at a time. `SWARM_TASK` retrieves matching Shell Cracked memory, fans the goal out to Hermes, OpenClaw, and the Orchestrator as `SWARM_ROUND`s, echoes each peer's contribution to the others (`SWARM_PEER`) and into the next round, then Hermes synthesizes a `SWARM_RESULT` that is written back to the vault as `swarm_result` — so the next swarm starts from what the last one learned. Peers can also address each other directly with `MESH` frames. The Orchestrator joins as a deterministic health-digest peer and now tracks gateway liveness. New Swarm tab in the UI; `GET /swarm` on the gateway. Contract: `artifacts/SWARM_MESH_PROTOCOL.md`; skill: `.cursor/skills/crabdeck-swarm-mesh`.
+
 ## Shell Cracked + bHive (post v2.2)
 
 Persistent memory vault on `:7070`, minute-slot heartbeats, Express `/health`+`/metrics`, Tailwind telemetry tab, and `asyncio.to_thread` offload so the 20s gateway watchdog stays green during Ollama/task I/O. Skills and contracts: `.cursor/skills/`, `artifacts/`, `AGENTS.md`. Details: `artifacts/SPRINT_VAULT_BHIVE.md`.
