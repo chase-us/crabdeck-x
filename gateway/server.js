@@ -17,12 +17,16 @@
 
 const { WebSocketServer, WebSocket } = require('ws')
 const http  = require('http')
+const express = require('express')
 const crypto = require('crypto')
 const { randomUUID } = crypto
+const bhive = require('./bhive')
+const { ingestHeartbeat } = require('./vault_client')
+const { SwarmMesh } = require('./swarm_mesh')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173')
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',').map(s => s.trim()).filter(Boolean)
 
 if (!GATEWAY_TOKEN) {
@@ -45,23 +49,39 @@ const agentStatus = {
   hermes:   'offline',
   crabdeck: 'running',
 }
+const swarmMesh = new SwarmMesh()
 
-// ── HTTP health endpoint ───────────────────────────────────────────────────
-const httpServer = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({
-      status:      'ok',
-      authRequired: Boolean(GATEWAY_TOKEN),
-      clients:     clients.size,
-      agentStatus,
-      uptime:      process.uptime(),
-    }))
-  } else {
-    res.writeHead(404)
-    res.end()
+function healthPayload() {
+  return {
+    status:       'ok',
+    authRequired: Boolean(GATEWAY_TOKEN),
+    clients:      clients.size,
+    agentStatus,
+    bhive_slot:   bhive.minuteSlot(),
+    uptime:       process.uptime(),
+    vault:        process.env.VAULT_URL || 'http://localhost:7070',
   }
+}
+
+const app = express()
+app.disable('x-powered-by')
+app.use(express.json({ limit: '32kb' }))
+app.get('/health', (_req, res) => { res.json(healthPayload()) })
+app.get('/metrics', (_req, res) => {
+  const now = Date.now()
+  const list = []
+  for (const [id, c] of clients) {
+    list.push({
+      id,
+      role: c.role,
+      lastSeen: c.lastSeen,
+      watchdog_miss: bhive.missedWatchdog(c.lastSeen, now),
+    })
+  }
+  res.json({ agentStatus, clients: list, slot: bhive.minuteSlot(now) })
 })
+
+const httpServer = http.createServer(app)
 
 // ── WebSocket server ───────────────────────────────────────────────────────
 const wss = new WebSocketServer({
@@ -93,6 +113,12 @@ function sendTo(role, msg) {
       c.ws.send(JSON.stringify(msg))
     }
   }
+}
+
+function activeSwarmMembers() {
+  return [...clients.values()]
+    .filter(client => client.authed && (client.role === 'hermes' || client.role === 'openclaw'))
+    .map(client => client.role)
 }
 
 function requireAuthed(client, ws) {
@@ -188,6 +214,77 @@ wss.on('connection', (ws) => {
         sendTo('hermes', { type: 'PROMPT', from: client.role, payload })
         break
 
+      // ── Collaborative RAG swarm ─────────────────────────────────────────
+      case 'SWARM_TASK': {
+        if (!requireAuthed(client, ws) || client.role !== 'ui') break
+        try {
+          const swarm = swarmMesh.create(payload, activeSwarmMembers())
+          const assignment = {
+            type: 'SWARM_ASSIGNMENT',
+            from: 'gateway',
+            payload: {
+              taskId: swarm.taskId,
+              task: swarm.task,
+              model: swarm.model,
+              participants: swarm.participants,
+              rag: { query: swarm.task, limit: 5 },
+            },
+          }
+          for (const member of swarm.participants) sendTo(member, assignment)
+          sendTo('ui', {
+            type: 'SWARM_STARTED',
+            payload: { taskId: swarm.taskId, participants: swarm.participants },
+          })
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_REJECTED', message: error.message }))
+        }
+        break
+      }
+
+      case 'SWARM_RESULT': {
+        if (!requireAuthed(client, ws) || !['hermes', 'openclaw'].includes(client.role)) break
+        try {
+          const update = swarmMesh.submit(client.role, payload)
+          broadcast({
+            type: 'SWARM_PEER_RESULT',
+            from: client.role,
+            payload: { taskId: update.taskId, agent: client.role, result: update.result, pending: update.pending },
+          }, id)
+          sendTo('ui', { type: 'SWARM_UPDATE', payload: update })
+          if (update.complete) {
+            sendTo('hermes', {
+              type: 'SWARM_SYNTHESIS',
+              from: 'gateway',
+              payload: {
+                taskId: update.taskId,
+                model: update.model,
+                results: update.results,
+              },
+            })
+            sendTo('ui', { type: 'SWARM_SYNTHESIZING', payload: { taskId: update.taskId } })
+          }
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_RESULT_REJECTED', message: error.message }))
+        }
+        break
+      }
+
+      case 'SWARM_SYNTHESIS_RESULT': {
+        if (!requireAuthed(client, ws) || client.role !== 'hermes') break
+        try {
+          const synthesis = payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? payload : null
+          if (!synthesis || typeof synthesis.taskId !== 'string' || typeof synthesis.result !== 'string') {
+            throw new TypeError('SWARM_SYNTHESIS_RESULT payload must include taskId and result strings')
+          }
+          sendTo('ui', { type: 'SWARM_COMPLETE', payload: synthesis })
+          swarmMesh.finish(synthesis.taskId)
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_SYNTHESIS_REJECTED', message: error.message }))
+        }
+        break
+      }
+
       // ── Hermes response — broadcast to UI clients only ───────────────────
       case 'HERMES_RESPONSE':
         if (!requireAuthed(client, ws) || client.role !== 'hermes') break
@@ -209,7 +306,12 @@ wss.on('connection', (ws) => {
           agentStatus[a] = 'running'
           broadcast({ type: 'AGENT_STATUS', agent: a, status: 'running' }, id)
         }
-        ws.send(JSON.stringify({ type: 'HEARTBEAT_ACK', ts: Date.now() }))
+        const ts = typeof msg.ts === 'number' ? msg.ts : Date.now() / 1000
+        const slot = typeof msg.bhive_slot === 'number' ? msg.bhive_slot : bhive.minuteSlot()
+        ws.send(JSON.stringify({ type: 'HEARTBEAT_ACK', ts: Date.now(), bhive_slot: slot }))
+        if (a && a !== 'unknown' && a !== 'ui') {
+          void ingestHeartbeat({ agent: a, ts, slot, source: 'gateway' })
+        }
         break
       }
 
@@ -238,7 +340,7 @@ setInterval(() => {
   const now = Date.now()
   for (const [, c] of clients) {
     if (c.role !== 'ui' && c.role !== 'unknown') {
-      if (now - c.lastSeen > 20_000 && agentStatus[c.role] === 'running') {
+      if (bhive.missedWatchdog(c.lastSeen, now) && agentStatus[c.role] === 'running') {
         agentStatus[c.role] = 'missed_heartbeat'
         broadcast({ type: 'AGENT_STATUS', agent: c.role, status: 'missed_heartbeat' })
       }
@@ -253,6 +355,7 @@ httpServer.listen(PORT, () => {
   🦀  CRABDECK GATEWAY  v2.2
       WebSocket : ws://localhost:${PORT}
       HTTP/health: http://localhost:${PORT}/health
+      HTTP/metrics: http://localhost:${PORT}/metrics
       Auth: ${GATEWAY_TOKEN ? 'ENABLED (token required)' : 'DISABLED (dev mode — set GATEWAY_TOKEN for prod)'}
   ████████████████████████████████████████
   `)

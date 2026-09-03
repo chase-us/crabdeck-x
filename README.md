@@ -1,7 +1,9 @@
 # 🦀 CrabDeck v2.2 — Hermes + OpenClaw Edition
 
 Installable, single-command launcher for the full CrabDeck stack:
-**Gateway → Orchestrator → Hermes (Ollama LLM) → OpenClaw (Sovereign Agent) → React UI**
+**Gateway → Vault (Shell Cracked) → Orchestrator → Hermes (Ollama LLM) → OpenClaw (Sovereign Agent) → React UI**
+
+Agent/operator playbooks from this stack live in [`.cursor/skills/`](.cursor/skills/) and [`artifacts/`](artifacts/). Coding agents should start at [`AGENTS.md`](AGENTS.md).
 
 > **v2.2** hardens v2.1 for publication: the gateway now requires a shared
 > auth token, OpenClaw's shell execution is off by default, and CORS is
@@ -63,35 +65,51 @@ Opens: **http://localhost:5173**
 ```
 User (Browser)
      │
-     ▼ http://localhost:5173
-CrabDeck UI (React + Vite)
+     ▼ http://localhost:5173  or http://127.0.0.1:5173
+CrabDeck UI (React + Vite + Tailwind telemetry)
      │
      │ WebSocket ws://localhost:8765  (HELLO + GATEWAY_TOKEN required)
+     │ HTTP /vault /gw /api  (Vite dev proxies)
      ▼
-CrabDeck Gateway (Node.js)
-     │               │
-     ▼               ▼
- Hermes Agent    OpenClaw Agent
- (Python)        (Python, shell exec OFF by default)
+CrabDeck Gateway (Node.js + Express /health /metrics)
+     │               │               │
+     ▼               ▼               ▼
+ Hermes Agent    OpenClaw Agent   Shell Cracked :7070
+ (offloaded      (offloaded       SQLite + vector memory
+  Ollama I/O)     task I/O)       bHive heartbeats
      │               │
      ▼               ▼
  Ollama :11434   System / OpenClaw.app
  (llama3/crabdeck)
 
 Health REST:
-  UI → GET /api/agents → Orchestrator :8000  (CORS locked to ALLOWED_ORIGINS)
+  UI → GET /api/agents → Orchestrator :8000
+  UI → GET /vault/health → Vault :7070
+  UI → GET /gw/health → Gateway :8765
 ```
 
 ---
 
 ## 🤖 Agents
 
+### 🕸️ Collaborative RAG swarm mesh
+- The **Swarm** tab fans a task out to every active agent (currently Hermes and
+  OpenClaw), so no static per-task agent list can drift from the running mesh.
+- Each agent retrieves up to five bounded, fail-open references from Shell
+  Cracked, treats them as untrusted context, and submits an independent result.
+- The gateway shares each contribution with peers and asks Hermes to synthesize
+  the completed set. The UI keeps individual contributions and the final
+  synthesis visible together.
+- A mesh requires at least two active agents; it does not fall back to a
+  single-agent answer while presenting it as collaboration.
+
 ### ⚡ Hermes — `agents/hermes_agent.py`
 - Connects to Gateway as `hermes` (authenticates with `GATEWAY_TOKEN`)
 - Receives `PROMPT` events → calls Ollama → sends `HERMES_RESPONSE`
 - Supports model selection from the UI dropdown (prefers the custom
   `crabdeck` model if it's been built, falls back to whatever's installed)
-- Heartbeats every 10 s
+- Heartbeats every 10 s with `bhive_slot`; vault ingest is fail-open off the event loop
+- Prompt results are stored in Shell Cracked vector memory when the vault is up
 
 ### 🦅 OpenClaw — `agents/openclaw_agent.py`
 - Connects to Gateway as `openclaw` (authenticates with `GATEWAY_TOKEN`)
@@ -99,7 +117,7 @@ Health REST:
   commands, but only if `ENABLE_SHELL_EXEC=1` is set (default: off)
 - Integrates with OpenClaw.app REST API if running on port 3131
 - Reports `TASK_RESULT` back to the UI
-- Heartbeats every 10 s
+- Heartbeats every 10 s with `bhive_slot`; task excerpts go to the vault when reachable
 
 ---
 
@@ -109,6 +127,7 @@ Health REST:
 |---------|------|-------|
 | CrabDeck UI | 5173 | `cd ui && npm run dev` |
 | Gateway | 8765 | `cd gateway && node server.js` |
+| Shell Cracked vault | 7070 | `cd vault && .venv/bin/uvicorn app:app --port 7070` |
 | Orchestrator | 8000 | `cd orchestrator && .venv/Scripts/uvicorn main:app --port 8000` |
 | Hermes Agent | — | `cd agents && .venv/Scripts/python hermes_agent.py` |
 | OpenClaw Agent | — | `cd agents && .venv/Scripts/python openclaw_agent.py` |
@@ -120,12 +139,17 @@ Health REST:
 
 ```
 CrabDeck/
+├── AGENTS.md                      ← coding-agent entry
 ├── SECURITY.md                    ← read before deploying publicly
+├── artifacts/                     ← architecture, bHive, vault API, runbook
+├── .cursor/skills/                ← reusable subsystem skills
+├── .cursor/rules/                 ← always-on CrabDeck guardrails
 ├── installer/
 │   ├── Install-CrabDeck.ps1       ← Windows installer (generates GATEWAY_TOKEN)
 │   └── Install-CrabDeck-Linux.sh  ← Linux/WSL installer
 ├── ui/                            React + Vite frontend
-│   ├── src/CrabDeck.jsx           Main app (Hermes + OpenClaw tabs)
+│   ├── src/CrabDeck.jsx           Main app (Hermes + OpenClaw + Telemetry)
+│   ├── src/Telemetry.jsx          bHive / vault / gateway watch
 │   ├── .env.example
 │   └── .env.local                 (created by installer)
 ├── gateway/
@@ -135,6 +159,12 @@ CrabDeck/
 ├── orchestrator/
 │   ├── main.py                    FastAPI health tracker
 │   ├── requirements.txt
+│   └── .env.example
+├── vault/                         Shell Cracked (SQLite + vectors + bHive)
+│   ├── app.py
+│   ├── bhive.py
+│   ├── sqlite_store.py
+│   ├── vectors.py
 │   └── .env.example
 ├── agents/
 │   ├── hermes_agent.py

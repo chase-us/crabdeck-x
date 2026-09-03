@@ -13,6 +13,12 @@ __pycache__/
 .env.local
 .env.*.local
 
+# Vault local state
+vault/data/
+
+# Browser verification artifacts
+.playwright-mcp/
+
 # OS / editor
 .DS_Store
 Thumbs.db

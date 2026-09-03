@@ -1,0 +1,13 @@
+---
+description: Never block CrabDeck agent asyncio loops; offload Ollama, HTTP, and subprocess work
+alwaysApply: true
+globs: ["agents/**/*.py", "orchestrator/**/*.py"]
+---
+
+# CrabDeck event loop
+
+- Call `run_blocking` (`asyncio.to_thread`) for every sync `requests`, `urllib`, or `subprocess` invocation from `async def`.
+- Heartbeat coroutines must keep ticking during 120s Ollama generates. The gateway watchdog is 20s.
+- Tests proving offload must use `threading.Event` released by a loop task. Do not `Event.wait()` on the asyncio thread. Do not assert flake-prone wall-clock tick counts.
+- Vault `emit_*` helpers are synchronous — wrap them in `run_blocking`.
+- Leave `ENABLE_SHELL_EXEC` default `"0"`.
