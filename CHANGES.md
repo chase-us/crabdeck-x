@@ -1,5 +1,10 @@
 # CrabDeck v2.1 → v2.2 — Changes
 
+## Shell Cracked + bHive (post v2.2)
+
+Persistent memory vault on `:7070`, minute-slot heartbeats, Express `/health`+`/metrics`, Tailwind telemetry tab, and `asyncio.to_thread` offload so the 20s gateway watchdog stays green during Ollama/task I/O. Skills and contracts: `.cursor/skills/`, `artifacts/`, `AGENTS.md`. Details: `artifacts/SPRINT_VAULT_BHIVE.md`.
+
+
 ## Fixed bugs
 - **`ui/.env.local` was dead config.** The installer wrote it, but
   `CrabDeck.jsx` hardcoded `ws://localhost:8765` / `http://localhost:11434`
