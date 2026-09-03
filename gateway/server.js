@@ -22,6 +22,7 @@ const crypto = require('crypto')
 const { randomUUID } = crypto
 const bhive = require('./bhive')
 const { ingestHeartbeat } = require('./vault_client')
+const { SwarmMesh } = require('./swarm_mesh')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
@@ -48,6 +49,7 @@ const agentStatus = {
   hermes:   'offline',
   crabdeck: 'running',
 }
+const swarmMesh = new SwarmMesh()
 
 function healthPayload() {
   return {
@@ -111,6 +113,12 @@ function sendTo(role, msg) {
       c.ws.send(JSON.stringify(msg))
     }
   }
+}
+
+function activeSwarmMembers() {
+  return [...clients.values()]
+    .filter(client => client.authed && (client.role === 'hermes' || client.role === 'openclaw'))
+    .map(client => client.role)
 }
 
 function requireAuthed(client, ws) {
@@ -205,6 +213,77 @@ wss.on('connection', (ws) => {
         console.log(`[route] ${client.role} → Hermes  ${JSON.stringify(payload).slice(0, 80)}`)
         sendTo('hermes', { type: 'PROMPT', from: client.role, payload })
         break
+
+      // ── Collaborative RAG swarm ─────────────────────────────────────────
+      case 'SWARM_TASK': {
+        if (!requireAuthed(client, ws) || client.role !== 'ui') break
+        try {
+          const swarm = swarmMesh.create(payload, activeSwarmMembers())
+          const assignment = {
+            type: 'SWARM_ASSIGNMENT',
+            from: 'gateway',
+            payload: {
+              taskId: swarm.taskId,
+              task: swarm.task,
+              model: swarm.model,
+              participants: swarm.participants,
+              rag: { query: swarm.task, limit: 5 },
+            },
+          }
+          for (const member of swarm.participants) sendTo(member, assignment)
+          sendTo('ui', {
+            type: 'SWARM_STARTED',
+            payload: { taskId: swarm.taskId, participants: swarm.participants },
+          })
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_REJECTED', message: error.message }))
+        }
+        break
+      }
+
+      case 'SWARM_RESULT': {
+        if (!requireAuthed(client, ws) || !['hermes', 'openclaw'].includes(client.role)) break
+        try {
+          const update = swarmMesh.submit(client.role, payload)
+          broadcast({
+            type: 'SWARM_PEER_RESULT',
+            from: client.role,
+            payload: { taskId: update.taskId, agent: client.role, result: update.result, pending: update.pending },
+          }, id)
+          sendTo('ui', { type: 'SWARM_UPDATE', payload: update })
+          if (update.complete) {
+            sendTo('hermes', {
+              type: 'SWARM_SYNTHESIS',
+              from: 'gateway',
+              payload: {
+                taskId: update.taskId,
+                model: update.model,
+                results: update.results,
+              },
+            })
+            sendTo('ui', { type: 'SWARM_SYNTHESIZING', payload: { taskId: update.taskId } })
+          }
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_RESULT_REJECTED', message: error.message }))
+        }
+        break
+      }
+
+      case 'SWARM_SYNTHESIS_RESULT': {
+        if (!requireAuthed(client, ws) || client.role !== 'hermes') break
+        try {
+          const synthesis = payload && typeof payload === 'object' && !Array.isArray(payload)
+            ? payload : null
+          if (!synthesis || typeof synthesis.taskId !== 'string' || typeof synthesis.result !== 'string') {
+            throw new TypeError('SWARM_SYNTHESIS_RESULT payload must include taskId and result strings')
+          }
+          sendTo('ui', { type: 'SWARM_COMPLETE', payload: synthesis })
+          swarmMesh.finish(synthesis.taskId)
+        } catch (error) {
+          ws.send(JSON.stringify({ type: 'ERROR', code: 'SWARM_SYNTHESIS_REJECTED', message: error.message }))
+        }
+        break
+      }
 
       // ── Hermes response — broadcast to UI clients only ───────────────────
       case 'HERMES_RESPONSE':

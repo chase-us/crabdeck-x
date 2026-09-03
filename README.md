@@ -92,6 +92,17 @@ Health REST:
 
 ## 🤖 Agents
 
+### 🕸️ Collaborative RAG swarm mesh
+- The **Swarm** tab fans a task out to every active agent (currently Hermes and
+  OpenClaw), so no static per-task agent list can drift from the running mesh.
+- Each agent retrieves up to five bounded, fail-open references from Shell
+  Cracked, treats them as untrusted context, and submits an independent result.
+- The gateway shares each contribution with peers and asks Hermes to synthesize
+  the completed set. The UI keeps individual contributions and the final
+  synthesis visible together.
+- A mesh requires at least two active agents; it does not fall back to a
+  single-agent answer while presenting it as collaboration.
+
 ### ⚡ Hermes — `agents/hermes_agent.py`
 - Connects to Gateway as `hermes` (authenticates with `GATEWAY_TOKEN`)
 - Receives `PROMPT` events → calls Ollama → sends `HERMES_RESPONSE`

@@ -103,6 +103,40 @@ class AgentDispatchTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TASK_RESULT", sent)
         self.assertIn("done:status", sent)
 
+    async def test_hermes_swarm_synthesis_returns_final_result(self) -> None:
+        from hermes_agent import dispatch_swarm_synthesis
+
+        ws = AsyncMock()
+        result = await dispatch_swarm_synthesis(
+            ws,
+            {"payload": {
+                "taskId": "mesh-1",
+                "model": "llama3",
+                "results": {"hermes": "reasoning", "openclaw": "systems"},
+            }},
+            generate=lambda prompt, model: f"{model}:{prompt.splitlines()[-1]}",
+        )
+        self.assertEqual(result, "llama3:Final answer:")
+        sent = ws.send.await_args.args[0]
+        self.assertIn("SWARM_SYNTHESIS_RESULT", sent)
+        self.assertIn("mesh-1", sent)
+
+    async def test_hermes_swarm_assignment_retrieves_context(self) -> None:
+        from hermes_agent import dispatch_swarm_assignment
+
+        ws = AsyncMock()
+        result = await dispatch_swarm_assignment(
+            ws,
+            {"payload": {"taskId": "mesh-2", "task": "diagnose", "model": "llama3"}},
+            generate=lambda prompt, model: "contribution" if "retrieved note" in prompt else "missing context",
+            retrieve=lambda query, limit: [{"text": "retrieved note"}],
+            remember=None,
+        )
+        self.assertEqual(result, "contribution")
+        sent = ws.send.await_args.args[0]
+        self.assertIn("SWARM_RESULT", sent)
+        self.assertIn("mesh-2", sent)
+
     async def test_tool_request_accepts_non_dict_payload(self) -> None:
         ws = AsyncMock()
         result = await dispatch_tool_request(
