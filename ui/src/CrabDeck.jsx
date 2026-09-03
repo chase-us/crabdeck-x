@@ -1,5 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Telemetry from './Telemetry.jsx'
+import Swarm, { initialSwarmState, reduceSwarm } from './Swarm.jsx'
+
+const SWARM_TYPES = new Set([
+  'MESH_PEERS', 'SWARM_STARTED', 'SWARM_ROUND', 'SWARM_CONTRIBUTION',
+  'SWARM_SYNTHESIZING', 'SWARM_RESULT', 'MESH_TRACE',
+])
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // These now actually read ui/.env.local (written by the installer) instead of
@@ -36,12 +42,24 @@ export default function CrabDeck() {
   const [clawInput, setClawInput]           = useState('')
   const [clawResults, setClawResults]       = useState([])
 
+  // Swarm mesh
+  const [swarm, setSwarm]                   = useState(initialSwarmState)
+
   const wsRef  = useRef(null)
   const logRef = useRef(null)
 
   const log = useCallback((msg, color = '#94a3b8') => {
     setLogs(prev => [...prev.slice(-200), { t: now(), msg, color }])
   }, [])
+
+  const sendFrame = useCallback((frame) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify(frame))
+      return true
+    }
+    log('⚠ Gateway not connected', '#f87171')
+    return false
+  }, [log])
 
   useEffect(() => {
     if (logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight
@@ -56,7 +74,7 @@ export default function CrabDeck() {
 
     ws.onopen = () => {
       setGwStatus('connecting') // wait for ACK before declaring "connected"
-      const hello = { type: 'HELLO', client: 'crabdeck-ui', version: '2.2' }
+      const hello = { type: 'HELLO', client: 'crabdeck-ui', version: '2.3' }
       if (GATEWAY_TOKEN) hello.token = GATEWAY_TOKEN
       ws.send(JSON.stringify(hello))
     }
@@ -78,6 +96,13 @@ export default function CrabDeck() {
 
         log(`← [${msg.type}] ${JSON.stringify(msg.payload ?? '').slice(0, 120)}`, '#7dd3fc')
 
+        if (SWARM_TYPES.has(msg.type)) {
+          setSwarm(prev => reduceSwarm(prev, msg))
+          if (msg.type === 'SWARM_RESULT') {
+            const ok = msg.payload?.status === 'done'
+            log(ok ? `🕸 swarm done via ${msg.payload.synthesized_by}` : `🕸 swarm failed: ${msg.payload?.error}`, ok ? '#4ade80' : '#f87171')
+          }
+        }
         if (msg.type === 'AGENT_STATUS') {
           setAgentHealth(prev => ({ ...prev, [msg.agent]: msg.status }))
         }
@@ -142,7 +167,7 @@ export default function CrabDeck() {
 
   // ── Boot ──────────────────────────────────────────────────────────────────────
   useEffect(() => {
-    log('🦀 CrabDeck v2.2 — Hermes + OpenClaw Edition', '#00c8ff')
+    log('🦀 CrabDeck v2.3 — Swarm Mesh Edition', '#00c8ff')
     log('Booting agent mesh…', '#94a3b8')
     connectGateway()
     checkOllama()
@@ -219,7 +244,7 @@ export default function CrabDeck() {
                     display:'flex', alignItems:'center', gap:16 }}>
         <span style={{ fontSize:22 }}>🦀</span>
         <span style={{ color:'#00c8ff', fontWeight:'bold', fontSize:16, letterSpacing:2 }}>CRABDECK</span>
-        <span style={{ color:'#475569', fontSize:11 }}>v2.2 · Hermes + OpenClaw Edition</span>
+        <span style={{ color:'#475569', fontSize:11 }}>v2.3 · Swarm Mesh Edition</span>
         <div style={{ marginLeft:'auto', display:'flex', gap:20, fontSize:11 }}>
           <span>
             <span style={{ display:'inline-block', width:8, height:8, borderRadius:'50%',
@@ -281,6 +306,9 @@ export default function CrabDeck() {
                         borderBottom:'1px solid #1e3a5f', background:'#06111f' }}>
             <button style={tabStyle('hermes')}  onClick={() => setActiveTab('hermes')}>⚡ HERMES</button>
             <button style={tabStyle('openclaw')} onClick={() => setActiveTab('openclaw')}>🦅 OPENCLAW</button>
+            <button style={tabStyle('swarm')} onClick={() => setActiveTab('swarm')}>
+              🕸 SWARM{swarm.peers.length ? ` (${swarm.peers.length})` : ''}
+            </button>
             <button style={tabStyle('telemetry')} onClick={() => setActiveTab('telemetry')}>📡 TELEMETRY</button>
             <button style={tabStyle('system')}  onClick={() => setActiveTab('system')}>📜 SYSTEM LOG</button>
           </div>
@@ -358,6 +386,11 @@ export default function CrabDeck() {
                 </button>
               </div>
             </div>
+          )}
+
+          {/* ── Swarm Mesh Tab ── */}
+          {activeTab === 'swarm' && (
+            <Swarm swarm={swarm} connected={gwStatus === 'connected'} send={sendFrame} defaultModel={selectedModel} />
           )}
 
           {activeTab === 'telemetry' && (

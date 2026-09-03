@@ -102,6 +102,7 @@ export default function Telemetry() {
           </div>
           <div className="mt-1 text-[11px] text-slate-500">
             uptime {gateway?.uptime != null ? `${Math.floor(gateway.uptime)}s` : '—'}
+            {gateway?.swarm ? ` · swarm ${gateway.swarm.active} active / ${gateway.swarm.total} total · ${gateway.swarm.peers?.length ?? 0} peers` : ''}
           </div>
         </div>
       </div>
