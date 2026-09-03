@@ -5,7 +5,7 @@
 .DESCRIPTION
     Installs and configures the full CrabDeck stack:
       - Node.js (gateway + UI)
-      - Python (orchestrator + Hermes + OpenClaw agents)
+      - Python (orchestrator + Hermes + OpenClaw agents + Shell Cracked vault)
       - Ollama (Hermes LLM backend)
       - CrabDeck model (ollama/Modelfile)
     Generates a shared GATEWAY_TOKEN and writes it to every service's .env file,
@@ -120,6 +120,15 @@ try {
     Write-OK "Agents venv ready (Hermes + OpenClaw)"
 } catch { Write-Warn "Agents venv setup failed: $_" } finally { Pop-Location }
 
+# ── 6b. Python venv — Shell Cracked vault ─────────────────────────────────────
+Write-Step "Creating Python venv for Shell Cracked vault…"
+Push-Location "$InstallDir\vault"
+try {
+    if (-not (Test-Path ".venv")) { python -m venv .venv 2>&1 | ForEach-Object { Write-Info $_ } }
+    & ".venv\Scripts\python.exe" -m pip install -q -r requirements.txt 2>&1 | ForEach-Object { Write-Info $_ }
+    Write-OK "Vault venv ready"
+} catch { Write-Warn "Vault venv setup failed: $_" } finally { Pop-Location }
+
 # ── 7. Build Ollama CrabDeck model ─────────────────────────────────────────────
 if (-not $global:OllamaMissing) {
     Write-Step "Building Ollama 'crabdeck' model…"
@@ -151,12 +160,16 @@ Set-Content -Path "$InstallDir\gateway\.env" -Value @"
 PORT=8765
 GATEWAY_TOKEN=$token
 ALLOWED_ORIGINS=http://localhost:5173
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$token
 "@
 
 Set-Content -Path "$InstallDir\orchestrator\.env" -Value @"
 GATEWAY_URL=ws://localhost:8765
 GATEWAY_TOKEN=$token
 ALLOWED_ORIGINS=http://localhost:5173
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$token
 "@
 
 Set-Content -Path "$InstallDir\agents\.env" -Value @"
@@ -167,6 +180,8 @@ DEFAULT_MODEL=llama3
 OPENCLAW_HTTP=http://localhost:3131
 ENABLE_SHELL_EXEC=0
 SHELL_ALLOWLIST=
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$token
 "@
 
 Set-Content -Path "$InstallDir\ui\.env.local" -Value @"
@@ -176,7 +191,15 @@ VITE_ORCHESTRATOR=http://localhost:8000
 VITE_GATEWAY_TOKEN=$token
 "@
 
-Write-OK ".env files written for gateway, orchestrator, agents, ui"
+Set-Content -Path "$InstallDir\vault\.env" -Value @"
+PORT=7070
+VAULT_TOKEN=$token
+ALLOWED_ORIGINS=http://localhost:5173
+VAULT_DATA_DIR=./data
+VAULT_VECTOR_BACKEND=sqlite
+"@
+
+Write-OK ".env files written for gateway, orchestrator, agents, vault, ui"
 if (-not $OpenGateway) {
     Write-Info "OpenClaw shell execution is OFF by default. Set ENABLE_SHELL_EXEC=1 in agents\.env only after reading the security note at the top of agents\openclaw_agent.py."
 }
@@ -207,29 +230,35 @@ Start-Sleep 2
 
 # 2. Gateway
 Import-DotEnv 'gateway\.env'
-Write-Host '  [2/6] Starting Gateway (port 8765)...' -ForegroundColor DarkCyan
+Write-Host '  [2/7] Starting Gateway (port 8765)...' -ForegroundColor DarkCyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd gateway; node server.js' -WindowStyle Normal
 Start-Sleep 1
 
-# 3. Orchestrator
+# 3. Shell Cracked vault
+Import-DotEnv 'vault\.env'
+Write-Host '  [3/7] Starting Shell Cracked vault (port 7070)...' -ForegroundColor DarkCyan
+Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd vault; .\.venv\Scripts\uvicorn app:app --host 0.0.0.0 --port 7070' -WindowStyle Minimized
+Start-Sleep 1
+
+# 4. Orchestrator
 Import-DotEnv 'orchestrator\.env'
-Write-Host '  [3/6] Starting Orchestrator (port 8000)...' -ForegroundColor DarkCyan
+Write-Host '  [4/7] Starting Orchestrator (port 8000)...' -ForegroundColor DarkCyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd orchestrator; .\.venv\Scripts\uvicorn main:app --port 8000' -WindowStyle Minimized
 Start-Sleep 1
 
-# 4. Hermes Agent
+# 5. Hermes Agent
 Import-DotEnv 'agents\.env'
-Write-Host '  [4/6] Starting Hermes Agent...' -ForegroundColor DarkCyan
+Write-Host '  [5/7] Starting Hermes Agent...' -ForegroundColor DarkCyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd agents; .\.venv\Scripts\python hermes_agent.py' -WindowStyle Normal
 Start-Sleep 1
 
-# 5. OpenClaw Agent
-Write-Host '  [5/6] Starting OpenClaw Agent...' -ForegroundColor DarkCyan
+# 6. OpenClaw Agent
+Write-Host '  [6/7] Starting OpenClaw Agent...' -ForegroundColor DarkCyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd agents; .\.venv\Scripts\python openclaw_agent.py' -WindowStyle Normal
 Start-Sleep 2
 
-# 6. UI (opens browser)
-Write-Host '  [6/6] Starting UI (port 5173)...' -ForegroundColor DarkCyan
+# 7. UI (opens browser)
+Write-Host '  [7/7] Starting UI (port 5173)...' -ForegroundColor DarkCyan
 Start-Process powershell -ArgumentList '-NoExit', '-Command', 'cd ui; npm run dev' -WindowStyle Minimized
 Start-Sleep 3
 Start-Process 'http://localhost:5173'
@@ -238,6 +267,7 @@ Write-Host ''
 Write-Host '  ✅  CrabDeck v2.2 is running!' -ForegroundColor Green
 Write-Host '      UI           → http://localhost:5173' -ForegroundColor Cyan
 Write-Host '      Gateway      → ws://localhost:8765' -ForegroundColor Cyan
+Write-Host '      Vault        → http://localhost:7070' -ForegroundColor Cyan
 Write-Host '      Orchestrator → http://localhost:8000' -ForegroundColor Cyan
 Write-Host ''
 "@
@@ -284,6 +314,7 @@ Write-Host ""
 Write-Host "  Services:" -ForegroundColor DarkCyan
 Write-Host "    UI          → http://localhost:5173" -ForegroundColor Gray
 Write-Host "    Gateway     → ws://localhost:8765" -ForegroundColor Gray
+Write-Host "    Vault       → http://localhost:7070/health" -ForegroundColor Gray
 Write-Host "    Orchestrator→ http://localhost:8000" -ForegroundColor Gray
 Write-Host "    Hermes      → python agents/hermes_agent.py" -ForegroundColor Gray
 Write-Host "    OpenClaw    → python agents/openclaw_agent.py" -ForegroundColor Gray

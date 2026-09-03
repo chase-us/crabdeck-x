@@ -17,8 +17,11 @@
 
 const { WebSocketServer, WebSocket } = require('ws')
 const http  = require('http')
+const express = require('express')
 const crypto = require('crypto')
 const { randomUUID } = crypto
+const bhive = require('./bhive')
+const { ingestHeartbeat } = require('./vault_client')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
@@ -46,22 +49,37 @@ const agentStatus = {
   crabdeck: 'running',
 }
 
-// ── HTTP health endpoint ───────────────────────────────────────────────────
-const httpServer = http.createServer((req, res) => {
-  if (req.url === '/health') {
-    res.writeHead(200, { 'Content-Type': 'application/json' })
-    res.end(JSON.stringify({
-      status:      'ok',
-      authRequired: Boolean(GATEWAY_TOKEN),
-      clients:     clients.size,
-      agentStatus,
-      uptime:      process.uptime(),
-    }))
-  } else {
-    res.writeHead(404)
-    res.end()
+function healthPayload() {
+  return {
+    status:       'ok',
+    authRequired: Boolean(GATEWAY_TOKEN),
+    clients:      clients.size,
+    agentStatus,
+    bhive_slot:   bhive.minuteSlot(),
+    uptime:       process.uptime(),
+    vault:        process.env.VAULT_URL || 'http://localhost:7070',
   }
+}
+
+const app = express()
+app.disable('x-powered-by')
+app.use(express.json({ limit: '32kb' }))
+app.get('/health', (_req, res) => { res.json(healthPayload()) })
+app.get('/metrics', (_req, res) => {
+  const now = Date.now()
+  const list = []
+  for (const [id, c] of clients) {
+    list.push({
+      id,
+      role: c.role,
+      lastSeen: c.lastSeen,
+      watchdog_miss: bhive.missedWatchdog(c.lastSeen, now),
+    })
+  }
+  res.json({ agentStatus, clients: list, slot: bhive.minuteSlot(now) })
 })
+
+const httpServer = http.createServer(app)
 
 // ── WebSocket server ───────────────────────────────────────────────────────
 const wss = new WebSocketServer({
@@ -209,7 +227,12 @@ wss.on('connection', (ws) => {
           agentStatus[a] = 'running'
           broadcast({ type: 'AGENT_STATUS', agent: a, status: 'running' }, id)
         }
-        ws.send(JSON.stringify({ type: 'HEARTBEAT_ACK', ts: Date.now() }))
+        const ts = typeof msg.ts === 'number' ? msg.ts : Date.now() / 1000
+        const slot = typeof msg.bhive_slot === 'number' ? msg.bhive_slot : bhive.minuteSlot()
+        ws.send(JSON.stringify({ type: 'HEARTBEAT_ACK', ts: Date.now(), bhive_slot: slot }))
+        if (a && a !== 'unknown' && a !== 'ui') {
+          void ingestHeartbeat({ agent: a, ts, slot, source: 'gateway' })
+        }
         break
       }
 
@@ -238,7 +261,7 @@ setInterval(() => {
   const now = Date.now()
   for (const [, c] of clients) {
     if (c.role !== 'ui' && c.role !== 'unknown') {
-      if (now - c.lastSeen > 20_000 && agentStatus[c.role] === 'running') {
+      if (bhive.missedWatchdog(c.lastSeen, now) && agentStatus[c.role] === 'running') {
         agentStatus[c.role] = 'missed_heartbeat'
         broadcast({ type: 'AGENT_STATUS', agent: c.role, status: 'missed_heartbeat' })
       }
@@ -253,6 +276,7 @@ httpServer.listen(PORT, () => {
   🦀  CRABDECK GATEWAY  v2.2
       WebSocket : ws://localhost:${PORT}
       HTTP/health: http://localhost:${PORT}/health
+      HTTP/metrics: http://localhost:${PORT}/metrics
       Auth: ${GATEWAY_TOKEN ? 'ENABLED (token required)' : 'DISABLED (dev mode — set GATEWAY_TOKEN for prod)'}
   ████████████████████████████████████████
   `)

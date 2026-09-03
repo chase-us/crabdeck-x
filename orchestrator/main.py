@@ -14,17 +14,20 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import time, threading, asyncio, os, psutil, uuid, json
+import time, threading, asyncio, os, psutil, uuid, json, urllib.error, urllib.request
 from typing import Dict, List, Optional
 import websockets
 
 # ── Config ────────────────────────────────────────────────────────────────────
 GATEWAY_URL        = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN      = os.environ.get("GATEWAY_TOKEN")
+VAULT_URL          = os.environ.get("VAULT_URL", "http://localhost:7070").rstrip("/")
+VAULT_TOKEN        = os.environ.get("VAULT_TOKEN") or GATEWAY_TOKEN
 ALLOWED_ORIGINS    = [o.strip() for o in os.environ.get("ALLOWED_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 HEARTBEAT_INTERVAL = 3.0
 HEARTBEAT_TIMEOUT  = 15.0
 MAX_EVENTS         = 300
+BHIVE_EVERY        = 10.0
 
 # ── Models ────────────────────────────────────────────────────────────────────
 class Agent(BaseModel):
@@ -78,6 +81,44 @@ def heartbeat_loop():
                 add_event("HEARTBEAT_MISSED", f"{agent.name} missed heartbeat", agent_id)
         time.sleep(HEARTBEAT_INTERVAL)
 
+def emit_vault_heartbeat(agent: str = "orchestrator") -> None:
+    ts = time.time()
+    body = json.dumps({
+        "agent": agent,
+        "ts": ts,
+        "slot": int(ts // 60),
+        "source": "orchestrator",
+    }).encode("utf-8")
+    req = urllib.request.Request(
+        f"{VAULT_URL}/v1/heartbeat",
+        data=body,
+        method="POST",
+        headers={"Content-Type": "application/json", "Accept": "application/json"},
+    )
+    if VAULT_TOKEN:
+        req.add_header("X-Vault-Token", VAULT_TOKEN)
+    try:
+        urllib.request.urlopen(req, timeout=1.5).read()
+    except (urllib.error.URLError, TimeoutError, OSError):
+        pass
+
+
+async def orchestrator_heartbeat(ws):
+    while True:
+        await asyncio.sleep(BHIVE_EVERY)
+        ts = time.time()
+        try:
+            await ws.send(json.dumps({
+                "type": "HEARTBEAT",
+                "agent": "orchestrator",
+                "ts": ts,
+                "bhive_slot": int(ts // 60),
+            }))
+        except Exception:
+            break
+        await asyncio.to_thread(emit_vault_heartbeat, "orchestrator")
+
+
 async def listen_gateway():
     while True:
         try:
@@ -87,20 +128,24 @@ async def listen_gateway():
                     hello["token"] = GATEWAY_TOKEN
                 await ws.send(json.dumps(hello))
                 add_event("SYSTEM", "Connected to CrabDeck Gateway", None)
-                async for raw in ws:
-                    try:
-                        msg = json.loads(raw)
-                        if msg.get("type") == "ERROR":
-                            add_event("SYSTEM", f"Gateway auth error: {msg.get('message')}", None)
-                        if msg.get("type") == "AGENT_STATUS":
-                            agent_id = msg.get("agent")
-                            status   = msg.get("status", "offline")
-                            if agent_id in agents:
-                                agents[agent_id].status         = status
-                                agents[agent_id].last_heartbeat = time.time()
-                                add_event("AGENT_STATUS", f"{agent_id} → {status}", agent_id)
-                    except Exception:
-                        pass
+                hb_task = asyncio.create_task(orchestrator_heartbeat(ws))
+                try:
+                    async for raw in ws:
+                        try:
+                            msg = json.loads(raw)
+                            if msg.get("type") == "ERROR":
+                                add_event("SYSTEM", f"Gateway auth error: {msg.get('message')}", None)
+                            if msg.get("type") == "AGENT_STATUS":
+                                agent_id = msg.get("agent")
+                                status   = msg.get("status", "offline")
+                                if agent_id in agents:
+                                    agents[agent_id].status         = status
+                                    agents[agent_id].last_heartbeat = time.time()
+                                    add_event("AGENT_STATUS", f"{agent_id} → {status}", agent_id)
+                        except Exception:
+                            pass
+                finally:
+                    hb_task.cancel()
         except Exception as e:
             add_event("SYSTEM", f"Gateway disconnected: {e} — retrying in 5 s", None)
             await asyncio.sleep(5)
@@ -132,7 +177,15 @@ app.add_middleware(
 # ── REST API ──────────────────────────────────────────────────────────────────
 @app.get("/health")
 def health():
-    return {"status": "ok", "agent_count": len(agents), "uptime": time.time()}
+    now = time.time()
+    return {
+        "status": "ok",
+        "service": "orchestrator",
+        "agent_count": len(agents),
+        "uptime": now,
+        "vault": VAULT_URL,
+        "bhive_slot": int(now // 60),
+    }
 
 @app.get("/agents", response_model=List[Agent])
 def list_agents():

@@ -20,6 +20,7 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
+from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
 
 GATEWAY_URL      = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN    = os.environ.get("GATEWAY_TOKEN")  # None in local/dev mode
@@ -115,24 +116,33 @@ async def run():
             await asyncio.sleep(RECONNECT_DELAY)
 
 
-async def dispatch_prompt(ws, msg, generate=ollama_generate):
+async def dispatch_prompt(ws, msg, generate=ollama_generate, remember=emit_memory):
     """Handle a PROMPT without blocking the event loop (gateway watchdog: 20s)."""
     if generate is None or not callable(generate):
         raise TypeError("dispatch_prompt requires a callable generate")
+    if remember is not None and not callable(remember):
+        raise TypeError("remember must be callable or None")
 
-    payload = msg.get("payload", {})
-    prompt  = payload.get("prompt", "") if isinstance(payload, dict) else str(payload)
-    model   = payload.get("model", DEFAULT_MODEL) if isinstance(payload, dict) else DEFAULT_MODEL
+    raw = msg.get("payload", {}) if isinstance(msg, dict) else {}
+    prompt  = raw.get("prompt", "") if isinstance(raw, dict) else str(raw)
+    model   = raw.get("model", DEFAULT_MODEL) if isinstance(raw, dict) else DEFAULT_MODEL
+    if not isinstance(prompt, str):
+        prompt = str(prompt)
+    if not isinstance(model, str) or not model.strip():
+        model = DEFAULT_MODEL
 
     print(f"[Hermes] PROMPT ({model}) → {prompt[:80]}…")
     reply = await run_blocking(generate, prompt, model)
-    print(f"[Hermes] RESPONSE → {reply[:80]}…")
+    print(f"[Hermes] RESPONSE → {str(reply)[:80]}…")
 
     await ws.send(json.dumps({
         "type":    "HERMES_RESPONSE",
         "agent":   "hermes",
         "payload": reply,
     }))
+    if remember is not None:
+        excerpt = f"{prompt[:1200]}\n---\n{str(reply)[:4000]}"
+        await run_blocking(remember, "hermes", "prompt_result", excerpt, {"model": model})
     return reply
 
 
@@ -168,11 +178,19 @@ async def dispatch_tool_request(ws, msg, generate=ollama_generate):
     return result
 
 
-async def heartbeat(ws):
+async def heartbeat(ws, emit=emit_heartbeat, every=HEARTBEAT_EVERY):
+    if emit is not None and not callable(emit):
+        raise TypeError("emit must be callable or None")
+    if not isinstance(every, (int, float)) or every < 0:
+        raise ValueError("every must be a non-negative number")
     while True:
-        await asyncio.sleep(HEARTBEAT_EVERY)
+        await asyncio.sleep(every)
         try:
-            await ws.send(json.dumps({"type": "HEARTBEAT", "agent": "hermes", "ts": time.time()}))
+            ts = time.time()
+            payload = heartbeat_payload("hermes", ts)
+            await ws.send(json.dumps(payload))
+            if emit is not None:
+                await run_blocking(emit, payload["agent"], payload["ts"], payload["bhive_slot"], "agent")
         except Exception:
             break
 

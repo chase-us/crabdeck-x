@@ -19,6 +19,18 @@ export default defineConfig({
         target:       'http://localhost:8000',
         changeOrigin: true,
         rewrite:      path => path.replace(/^\/api/, '')
+      },
+      // Shell Cracked memory vault
+      '/vault': {
+        target:       'http://localhost:7070',
+        changeOrigin: true,
+        rewrite:      path => path.replace(/^\/vault/, '')
+      },
+      // Gateway HTTP health/metrics
+      '/gw': {
+        target:       'http://localhost:8765',
+        changeOrigin: true,
+        rewrite:      path => path.replace(/^\/gw/, '')
       }
     }
   }

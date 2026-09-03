@@ -58,6 +58,11 @@ cyan "Creating Agents Python venv (Hermes + OpenClaw)…"
   && python3 -m venv .venv \
   && .venv/bin/pip install -q -r requirements.txt) && green "Agents venv ready"
 
+cyan "Creating Shell Cracked vault Python venv…"
+(cd "$INSTALL_DIR/vault" \
+  && python3 -m venv .venv \
+  && .venv/bin/pip install -q -r requirements.txt) && green "Vault venv ready"
+
 # ── Ollama model ──────────────────────────────────────────────────────────────
 if [ "$OLLAMA_OK" = true ]; then
     cyan "Building Ollama 'crabdeck' model…"
@@ -80,12 +85,16 @@ cat > "$INSTALL_DIR/gateway/.env" << ENV
 PORT=8765
 GATEWAY_TOKEN=$TOKEN
 ALLOWED_ORIGINS=http://localhost:5173
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$TOKEN
 ENV
 
 cat > "$INSTALL_DIR/orchestrator/.env" << ENV
 GATEWAY_URL=ws://localhost:8765
 GATEWAY_TOKEN=$TOKEN
 ALLOWED_ORIGINS=http://localhost:5173
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$TOKEN
 ENV
 
 cat > "$INSTALL_DIR/agents/.env" << ENV
@@ -96,6 +105,8 @@ DEFAULT_MODEL=llama3
 OPENCLAW_HTTP=http://localhost:3131
 ENABLE_SHELL_EXEC=0
 SHELL_ALLOWLIST=
+VAULT_URL=http://localhost:7070
+VAULT_TOKEN=$TOKEN
 ENV
 
 cat > "$INSTALL_DIR/ui/.env.local" << ENV
@@ -105,7 +116,15 @@ VITE_ORCHESTRATOR=http://localhost:8000
 VITE_GATEWAY_TOKEN=$TOKEN
 ENV
 
-green ".env files written for gateway, orchestrator, agents, ui"
+cat > "$INSTALL_DIR/vault/.env" << ENV
+PORT=7070
+VAULT_TOKEN=$TOKEN
+ALLOWED_ORIGINS=http://localhost:5173
+VAULT_DATA_DIR=./data
+VAULT_VECTOR_BACKEND=sqlite
+ENV
+
+green ".env files written for gateway, orchestrator, agents, vault, ui"
 [ "$OPEN_GATEWAY" = false ] && info "OpenClaw shell execution is OFF by default. See agents/openclaw_agent.py before setting ENABLE_SHELL_EXEC=1."
 
 # ── Launcher script (sources every .env before starting each service) ───────
@@ -129,25 +148,31 @@ echo "  [2] Starting Gateway (port 8765)…"
 (cd gateway && node server.js) &>/tmp/gateway.log &
 sleep 1
 
-# 3. Orchestrator
+# 3. Shell Cracked vault
+load_env vault/.env
+echo "  [3] Starting Shell Cracked vault (port 7070)…"
+(cd vault && .venv/bin/uvicorn app:app --host 0.0.0.0 --port 7070) &>/tmp/vault.log &
+sleep 1
+
+# 4. Orchestrator
 load_env orchestrator/.env
-echo "  [3] Starting Orchestrator (port 8000)…"
+echo "  [4] Starting Orchestrator (port 8000)…"
 (cd orchestrator && .venv/bin/uvicorn main:app --port 8000) &>/tmp/orchestrator.log &
 sleep 1
 
-# 4. Hermes
+# 5. Hermes
 load_env agents/.env
-echo "  [4] Starting Hermes Agent…"
+echo "  [5] Starting Hermes Agent…"
 (cd agents && .venv/bin/python hermes_agent.py) &>/tmp/hermes.log &
 sleep 1
 
-# 5. OpenClaw
-echo "  [5] Starting OpenClaw Agent…"
+# 6. OpenClaw
+echo "  [6] Starting OpenClaw Agent…"
 (cd agents && .venv/bin/python openclaw_agent.py) &>/tmp/openclaw.log &
 sleep 2
 
-# 6. UI
-echo "  [6] Starting UI (port 5173)…"
+# 7. UI
+echo "  [7] Starting UI (port 5173)…"
 (cd ui && npm run dev) &>/tmp/ui.log &
 sleep 3
 
@@ -155,10 +180,11 @@ echo ""
 echo "  ✅  CrabDeck is running!"
 echo "      UI           → http://localhost:5173"
 echo "      Gateway      → ws://localhost:8765"
+echo "      Vault        → http://localhost:7070"
 echo "      Orchestrator → http://localhost:8000"
 echo ""
-echo "  Logs: /tmp/{gateway,orchestrator,hermes,openclaw,ui}.log"
-echo "  Stop: kill \\\$(lsof -ti :5173 :8765 :8000) 2>/dev/null; pkill -f hermes_agent; pkill -f openclaw_agent"
+echo "  Logs: /tmp/{gateway,vault,orchestrator,hermes,openclaw,ui}.log"
+echo "  Stop: kill \\\$(lsof -ti :5173 :8765 :8000 :7070) 2>/dev/null; pkill -f hermes_agent; pkill -f openclaw_agent"
 LAUNCH
 chmod +x "$INSTALL_DIR/start.sh"
 green "start.sh written"
@@ -173,6 +199,7 @@ echo ""
 echo "  Services:"
 echo "    UI           → http://localhost:5173"
 echo "    Gateway      → ws://localhost:8765"
+echo "    Vault        → http://localhost:7070/health"
 echo "    Orchestrator → http://localhost:8000"
 echo "    Hermes       → python agents/hermes_agent.py"
 echo "    OpenClaw     → python agents/openclaw_agent.py"

@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
+import Telemetry from './Telemetry.jsx'
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 // These now actually read ui/.env.local (written by the installer) instead of
@@ -247,7 +248,7 @@ export default function CrabDeck() {
             return (
               <div key={a.id} style={{ background:'#0a1628', border:`1px solid ${ok ? a.color + '44' : '#1e3a5f'}`,
                                        borderRadius:8, padding:'10px 12px', cursor:'pointer' }}
-                   onClick={() => setActiveTab(a.id === 'crabdeck' ? 'system' : a.id)}>
+                   onClick={() => setActiveTab(a.id === 'crabdeck' ? 'telemetry' : a.id)}>
                 <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:4 }}>
                   <span style={{ fontSize:18 }}>{a.icon}</span>
                   <span style={{ color: ok ? a.color : '#64748b', fontWeight:'bold', fontSize:13 }}>{a.label}</span>
@@ -280,7 +281,8 @@ export default function CrabDeck() {
                         borderBottom:'1px solid #1e3a5f', background:'#06111f' }}>
             <button style={tabStyle('hermes')}  onClick={() => setActiveTab('hermes')}>⚡ HERMES</button>
             <button style={tabStyle('openclaw')} onClick={() => setActiveTab('openclaw')}>🦅 OPENCLAW</button>
-            <button style={tabStyle('system')}  onClick={() => setActiveTab('system')}>📡 SYSTEM LOG</button>
+            <button style={tabStyle('telemetry')} onClick={() => setActiveTab('telemetry')}>📡 TELEMETRY</button>
+            <button style={tabStyle('system')}  onClick={() => setActiveTab('system')}>📜 SYSTEM LOG</button>
           </div>
 
           {/* ── Hermes Tab ── */}
@@ -355,6 +357,12 @@ export default function CrabDeck() {
                   🦅 Send
                 </button>
               </div>
+            </div>
+          )}
+
+          {activeTab === 'telemetry' && (
+            <div style={{ flex:1, overflow:'hidden', minHeight:0 }}>
+              <Telemetry />
             </div>
           )}
 
