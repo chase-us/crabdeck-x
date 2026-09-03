@@ -38,6 +38,16 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
+from rag import inject_rag, retrieve_context
+from swarm_mesh import (
+    MSG_SWARM_DELEGATE,
+    MSG_SWARM_PEER_QUERY,
+    MSG_SWARM_PEER_RESPONSE,
+    build_peer_response,
+    enrich_with_rag,
+    handle_peer_query_payload,
+    parse_delegate_payload,
+)
 from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
 
 GATEWAY_URL       = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
@@ -105,7 +115,7 @@ def run_shell(cmd: str) -> str:
     except Exception as e:
         return f"[error] {e}"
 
-def ollama_reason(task: str, model: str = DEFAULT_MODEL) -> str:
+def ollama_reason(task: str, model: str = DEFAULT_MODEL, use_rag: bool = True) -> str:
     """Use Ollama to reason about a task and produce an action."""
     cmd_instructions = (
         "For system tasks: respond with a shell command wrapped in <CMD>command here</CMD>."
@@ -120,6 +130,9 @@ For questions or analysis: respond with a clear answer.
 Keep responses concise and actionable."""
 
     prompt = f"{system_ctx}\n\nTask: {task}\n\nResponse:"
+    if use_rag:
+        ctx, _ = retrieve_context(task)
+        prompt = inject_rag(prompt, ctx)
     try:
         r = requests.post(
             f"{OLLAMA_URL}/api/generate",
@@ -135,6 +148,7 @@ def handle_task(payload) -> str:
     """Route a TASK payload to the right handler."""
     task  = payload.get("task", "") if isinstance(payload, dict) else str(payload)
     model = payload.get("model", DEFAULT_MODEL) if isinstance(payload, dict) else DEFAULT_MODEL
+    use_rag = payload.get("rag", True) if isinstance(payload, dict) else True
 
     print(f"[OpenClaw] Task: {task[:80]}")
 
@@ -144,7 +158,7 @@ def handle_task(payload) -> str:
             print(f"[OpenClaw] App result: {result[:80]}")
             return f"[via OpenClaw.app] {result}"
 
-    response = ollama_reason(task, model)
+    response = ollama_reason(task, model, use_rag=use_rag)
 
     if ENABLE_SHELL_EXEC and "<CMD>" in response and "</CMD>" in response:
         start = response.index("<CMD>") + 5
@@ -202,6 +216,8 @@ async def run():
 
                     if mtype == "TASK":
                         await dispatch_task(ws, msg)
+                    elif mtype in (MSG_SWARM_DELEGATE, MSG_SWARM_PEER_QUERY):
+                        await dispatch_swarm_message(ws, msg)
                     elif mtype == "WELCOME":
                         print(f"[OpenClaw] Gateway: {msg.get('message', '')}")
                     elif mtype == "ERROR":
@@ -238,6 +254,39 @@ async def dispatch_task(ws, msg, handle=handle_task, remember=emit_memory):
     if remember is not None:
         excerpt = f"{str(payload)[:1200]}\n---\n{str(result)[:4000]}"
         await run_blocking(remember, "openclaw", "task_result", excerpt, {"kind": "openclaw_task"})
+    return result
+
+
+async def dispatch_swarm_message(ws, msg, handle=handle_task):
+    """Handle swarm mesh delegation with shared RAG context."""
+    mtype = msg.get("type")
+    task_id = str(msg.get("task_id", ""))
+    session_id = str(msg.get("session_id", ""))
+    from_agent = str(msg.get("from", "swarm"))
+
+    if mtype == MSG_SWARM_DELEGATE:
+        instruction, model, rag_context, _ = parse_delegate_payload(msg)
+        enriched = enrich_with_rag(instruction, rag_context)
+        print(f"[OpenClaw] SWARM_DELEGATE → {instruction[:80]}…")
+        result = await run_blocking(handle, {"task": enriched, "model": model, "rag": False})
+        source_text = instruction
+    else:
+        question = handle_peer_query_payload(msg)
+        ctx, _ = retrieve_context(question)
+        enriched = inject_rag(question, ctx)
+        print(f"[OpenClaw] SWARM_PEER_QUERY → {question[:80]}…")
+        result = await run_blocking(handle, {"task": enriched, "rag": False})
+        source_text = question
+
+    await ws.send(json.dumps(build_peer_response(
+        task_id=task_id,
+        session_id=session_id,
+        answer=result,
+        from_agent="openclaw",
+        in_reply_to=from_agent,
+    )))
+    excerpt = f"swarm:{source_text}\n---\n{str(result)[:4000]}"
+    await run_blocking(emit_memory, "openclaw", "swarm_peer", excerpt, {"task_id": task_id})
     return result
 
 

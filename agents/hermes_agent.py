@@ -20,6 +20,16 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
+from rag import inject_rag, retrieve_context
+from swarm_mesh import (
+    MSG_SWARM_DELEGATE,
+    MSG_SWARM_PEER_QUERY,
+    MSG_SWARM_PEER_RESPONSE,
+    build_peer_response,
+    enrich_with_rag,
+    handle_peer_query_payload,
+    parse_delegate_payload,
+)
 from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
 
 GATEWAY_URL      = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
@@ -46,8 +56,12 @@ def ollama_models():
     except Exception:
         return []
 
-def ollama_generate(prompt: str, model: str = DEFAULT_MODEL) -> str:
-    payload = {"model": model, "prompt": prompt, "stream": False}
+def ollama_generate(prompt: str, model: str = DEFAULT_MODEL, use_rag: bool = True) -> str:
+    full_prompt = prompt
+    if use_rag:
+        ctx, _ = retrieve_context(prompt)
+        full_prompt = inject_rag(prompt, ctx)
+    payload = {"model": model, "prompt": full_prompt, "stream": False}
     try:
         r = requests.post(f"{OLLAMA_URL}/api/generate", json=payload, timeout=120)
         r.raise_for_status()
@@ -100,6 +114,8 @@ async def run():
                         await dispatch_prompt(ws, msg)
                     elif mtype == "TOOL_REQUEST":
                         await dispatch_tool_request(ws, msg)
+                    elif mtype in (MSG_SWARM_DELEGATE, MSG_SWARM_PEER_QUERY):
+                        await dispatch_swarm_message(ws, msg)
                     elif mtype == "ERROR":
                         print(f"[Hermes] Gateway error: {msg.get('message')}")
 
@@ -176,6 +192,39 @@ async def dispatch_tool_request(ws, msg, generate=ollama_generate):
         "payload": {"tool": tool_name, "result": result},
     }))
     return result
+
+
+async def dispatch_swarm_message(ws, msg, generate=ollama_generate):
+    """Handle swarm mesh delegation or peer queries with shared RAG context."""
+    mtype = msg.get("type")
+    task_id = str(msg.get("task_id", ""))
+    session_id = str(msg.get("session_id", ""))
+    from_agent = str(msg.get("from", "swarm"))
+
+    if mtype == MSG_SWARM_DELEGATE:
+        instruction, model, rag_context, _ = parse_delegate_payload(msg)
+        prompt = enrich_with_rag(instruction, rag_context)
+        print(f"[Hermes] SWARM_DELEGATE ({model}) → {instruction[:80]}…")
+        reply = await run_blocking(generate, prompt, model, False)
+        source_text = instruction
+    else:
+        question = handle_peer_query_payload(msg)
+        ctx, _ = retrieve_context(question)
+        prompt = inject_rag(question, ctx)
+        print(f"[Hermes] SWARM_PEER_QUERY → {question[:80]}…")
+        reply = await run_blocking(generate, prompt, DEFAULT_MODEL, False)
+        source_text = question
+
+    await ws.send(json.dumps(build_peer_response(
+        task_id=task_id,
+        session_id=session_id,
+        answer=reply,
+        from_agent="hermes",
+        in_reply_to=from_agent,
+    )))
+    excerpt = f"swarm:{source_text}\n---\n{str(reply)[:4000]}"
+    await run_blocking(emit_memory, "hermes", "swarm_peer", excerpt, {"task_id": task_id})
+    return reply
 
 
 async def heartbeat(ws, emit=emit_heartbeat, every=HEARTBEAT_EVERY):

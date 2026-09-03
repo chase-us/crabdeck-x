@@ -1,0 +1,18 @@
+name: swarm
+version: "2.3"
+role: coordinator
+description: Swarm mesh coordinator — RAG retrieval, goal decomposition, peer delegation, synthesis
+events:
+  listens:
+    - SWARM_GOAL
+    - SWARM_PEER_RESPONSE
+  emits:
+    - SWARM_DELEGATE
+    - SWARM_CONTEXT
+    - SWARM_RESULT
+    - HEARTBEAT
+mesh:
+  peers: [hermes, openclaw, orchestrator]
+  rag:
+    vault_url: http://localhost:7070
+    top_k: 5

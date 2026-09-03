@@ -12,6 +12,7 @@ const GATEWAY_TOKEN  = import.meta.env.VITE_GATEWAY_TOKEN   || null
 const AGENTS = [
   { id: 'openclaw',  label: 'OpenClaw',  color: '#ff6b35', icon: '🦅', desc: 'Sovereign Node / System Agent' },
   { id: 'hermes',    label: 'Hermes',    color: '#a78bfa', icon: '⚡', desc: 'LLM Messenger / Ollama Bridge'  },
+  { id: 'swarm',     label: 'Swarm',     color: '#22d3ee', icon: '🕸️', desc: 'Mesh Coordinator / RAG + Peers' },
   { id: 'crabdeck',  label: 'CrabDeck',  color: '#00c8ff', icon: '🦀', desc: 'Gateway Controller'             },
 ]
 
@@ -33,8 +34,14 @@ export default function CrabDeck() {
   const [selectedModel, setSelectedModel]   = useState('llama3')
 
   // OpenClaw
-  const [clawInput, setClawInput]           = useState('')
+  const [clawInput, setClawInput]       = useState('')
   const [clawResults, setClawResults]       = useState([])
+
+  // Swarm mesh
+  const [swarmInput, setSwarmInput]         = useState('')
+  const [swarmLoading, setSwarmLoading]     = useState(false)
+  const [swarmResult, setSwarmResult]       = useState('')
+  const [swarmMesh, setSwarmMesh]           = useState(null)
 
   const wsRef  = useRef(null)
   const logRef = useRef(null)
@@ -91,6 +98,17 @@ export default function CrabDeck() {
             { t: now(), task: msg.payload?.task ?? '?', result },
             ...prev.slice(0, 19)
           ])
+        }
+        if (msg.type === 'SWARM_RESULT') {
+          const synthesis = msg.payload?.synthesis ?? JSON.stringify(msg.payload)
+          setSwarmResult(synthesis)
+          setSwarmLoading(false)
+        }
+        if (msg.type === 'SWARM_MESH_STATUS') {
+          setSwarmMesh(msg)
+        }
+        if (msg.type === 'SWARM_ACK') {
+          log(`🕸️ Swarm ack: ${msg.status ?? 'ok'}`, '#22d3ee')
         }
       } catch {
         log(`← ${String(data).slice(0, 160)}`, '#7dd3fc')
@@ -200,6 +218,33 @@ export default function CrabDeck() {
     }
   }
 
+  // ── Swarm mesh via Gateway ──────────────────────────────────────────────────
+  const sendSwarmGoal = () => {
+    if (!swarmInput.trim() || swarmLoading) return
+    const goal = swarmInput.trim()
+    setSwarmInput('')
+    setSwarmLoading(true)
+    setSwarmResult('')
+    log(`→ [Swarm] ${goal}`, '#22d3ee')
+
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'SWARM_GOAL',
+        session_id: `swarm-${Date.now()}`,
+        payload: { goal, model: selectedModel },
+      }))
+    } else {
+      log('⚠ Gateway not connected — cannot start swarm mesh', '#f87171')
+      setSwarmLoading(false)
+    }
+  }
+
+  const fetchMeshStatus = () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'SWARM_MESH_STATUS' }))
+    }
+  }
+
   // ── Styles ────────────────────────────────────────────────────────────────────
   const gwColor  = { connected: '#4ade80', connecting: '#fbbf24', error: '#f87171', disconnected: '#64748b' }
   const tabStyle = (t) => ({
@@ -281,6 +326,7 @@ export default function CrabDeck() {
                         borderBottom:'1px solid #1e3a5f', background:'#06111f' }}>
             <button style={tabStyle('hermes')}  onClick={() => setActiveTab('hermes')}>⚡ HERMES</button>
             <button style={tabStyle('openclaw')} onClick={() => setActiveTab('openclaw')}>🦅 OPENCLAW</button>
+            <button style={tabStyle('swarm')} onClick={() => { setActiveTab('swarm'); fetchMeshStatus() }}>🕸️ SWARM</button>
             <button style={tabStyle('telemetry')} onClick={() => setActiveTab('telemetry')}>📡 TELEMETRY</button>
             <button style={tabStyle('system')}  onClick={() => setActiveTab('system')}>📜 SYSTEM LOG</button>
           </div>
@@ -355,6 +401,59 @@ export default function CrabDeck() {
                   style={{ background:'#c2410c', color:'#fff', border:'none', borderRadius:6,
                            padding:'8px 18px', cursor:'pointer', fontSize:12 }}>
                   🦅 Send
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Swarm Mesh Tab ── */}
+          {activeTab === 'swarm' && (
+            <div style={{ flex:1, display:'flex', flexDirection:'column', overflow:'hidden' }}>
+              <div style={{ padding:'10px 16px', borderBottom:'1px solid #1e3a5f', background:'#06111f',
+                            display:'flex', gap:12, alignItems:'center', flexWrap:'wrap' }}>
+                <span style={{ color:'#22d3ee', fontSize:11, letterSpacing:1 }}>MESH STATUS</span>
+                {swarmMesh?.online && Object.entries(swarmMesh.online).map(([id, st]) => (
+                  <span key={id} style={{ fontSize:10, color: st === 'running' ? '#4ade80' : '#64748b' }}>
+                    {id}: {st}
+                  </span>
+                ))}
+                <button onClick={fetchMeshStatus}
+                  style={{ marginLeft:'auto', background:'#0f172a', color:'#22d3ee', border:'1px solid #1e3a5f',
+                           borderRadius:6, padding:'4px 10px', cursor:'pointer', fontSize:10 }}>
+                  Refresh mesh
+                </button>
+              </div>
+              <div style={{ flex:1, overflowY:'auto', padding:'14px 16px' }}>
+                {swarmResult ? (
+                  <div style={{ background:'#0f172a', border:'1px solid #0891b2', borderRadius:8,
+                                padding:'12px 14px', fontSize:12, color:'#a5f3fc', lineHeight:1.6, whiteSpace:'pre-wrap' }}>
+                    <span style={{ color:'#22d3ee', fontSize:10, display:'block', marginBottom:6 }}>🕸️ SWARM SYNTHESIS (RAG + peers)</span>
+                    {swarmResult}
+                  </div>
+                ) : (
+                  <div style={{ color:'#334155', fontSize:12, marginTop:40, textAlign:'center' }}>
+                    {agentHealth['swarm'] === 'running'
+                      ? 'Swarm coordinator online. Send a collaborative goal — Hermes + OpenClaw will work together with shared RAG context.'
+                      : '⚠ Swarm offline. Run: python agents/swarm_agent.py'}
+                  </div>
+                )}
+                {swarmLoading && (
+                  <div style={{ color:'#22d3ee', fontSize:12, marginTop:16 }}>
+                    🕸️ Coordinating mesh — retrieving RAG context, delegating to peers…
+                  </div>
+                )}
+              </div>
+              <div style={{ display:'flex', gap:8, padding:'10px 16px',
+                            borderTop:'1px solid #1e3a5f', background:'#06111f' }}>
+                <input value={swarmInput} onChange={e => setSwarmInput(e.target.value)}
+                  onKeyDown={e => e.key === 'Enter' && sendSwarmGoal()}
+                  placeholder="Collaborative swarm goal (RAG + Hermes + OpenClaw)…"
+                  style={{ flex:1, background:'#0a1628', border:'1px solid #1e3a5f', borderRadius:6,
+                           color:'#e2e8f0', padding:'8px 12px', fontSize:12, outline:'none' }} />
+                <button onClick={sendSwarmGoal} disabled={swarmLoading}
+                  style={{ background: swarmLoading ? '#1e293b' : '#0891b2', color:'#fff', border:'none',
+                           borderRadius:6, padding:'8px 18px', cursor:'pointer', fontSize:12 }}>
+                  {swarmLoading ? '…' : '🕸️ Run Swarm'}
                 </button>
               </div>
             </div>

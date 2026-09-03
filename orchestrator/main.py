@@ -65,7 +65,8 @@ def seed_agents():
     now = time.time()
     for agent_id, name in [("crabdeck", "CrabDeck Gateway"),
                             ("openclaw", "OpenClaw Sovereign"),
-                            ("hermes",   "Hermes Messenger")]:
+                            ("hermes",   "Hermes Messenger"),
+                            ("swarm",    "Swarm Coordinator")]:
         agents[agent_id] = Agent(id=agent_id, name=name, status="offline", last_heartbeat=now)
     add_event("SYSTEM", "Team CrabDeck agents seeded", None)
 
@@ -210,6 +211,33 @@ def restart_agent(agent_id: str):
 @app.get("/events", response_model=List[Event])
 def get_events(limit: int = 100):
     return events[-limit:]
+
+
+class SwarmGoal(BaseModel):
+    goal: str
+    model: str = "llama3"
+    session_id: Optional[str] = None
+
+
+@app.post("/swarm/goal")
+def post_swarm_goal(body: SwarmGoal):
+    """Queue a collaborative swarm goal (proxied to gateway by UI in practice)."""
+    if not body.goal.strip():
+        raise HTTPException(status_code=400, detail="goal must be non-empty")
+    add_event("SWARM_GOAL", body.goal[:200], "swarm")
+    return {
+        "status": "accepted",
+        "goal": body.goal,
+        "model": body.model,
+        "session_id": body.session_id,
+        "hint": "Send SWARM_GOAL via gateway WebSocket for live mesh execution",
+    }
+
+
+@app.get("/swarm/status")
+def swarm_status():
+    online = {aid: a.status for aid, a in agents.items() if aid in {"hermes", "openclaw", "swarm", "orchestrator"}}
+    return {"mesh_agents": list(online.keys()), "online": online, "vault": VAULT_URL}
 
 if __name__ == "__main__":
     import uvicorn

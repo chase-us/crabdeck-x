@@ -11,7 +11,7 @@ from typing import Any
 VAULT_URL = os.environ.get("VAULT_URL", "http://localhost:7070").rstrip("/")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN") or os.environ.get("GATEWAY_TOKEN")
 SLOT_SECONDS = 60
-ALLOWED_AGENTS = frozenset({"hermes", "openclaw", "orchestrator", "crabdeck", "vault"})
+ALLOWED_AGENTS = frozenset({"hermes", "openclaw", "orchestrator", "crabdeck", "vault", "swarm"})
 
 
 def minute_slot(ts_seconds: float) -> int:

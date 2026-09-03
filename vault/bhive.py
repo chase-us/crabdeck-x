@@ -11,7 +11,7 @@ from dataclasses import dataclass
 
 SLOT_SECONDS = 60
 WATCHDOG_SECONDS = 20.0
-ALLOWED_AGENTS = frozenset({"hermes", "openclaw", "orchestrator", "crabdeck", "vault"})
+ALLOWED_AGENTS = frozenset({"hermes", "openclaw", "orchestrator", "crabdeck", "vault", "swarm"})
 
 
 def minute_slot(ts_seconds: float) -> int:

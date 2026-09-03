@@ -22,6 +22,7 @@ const crypto = require('crypto')
 const { randomUUID } = crypto
 const bhive = require('./bhive')
 const { ingestHeartbeat } = require('./vault_client')
+const { isSwarmType, createMeshRouter } = require('./swarm')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
@@ -46,6 +47,7 @@ const clients = new Map()   // id → { ws, role, authed, connectedAt, lastSeen 
 const agentStatus = {
   openclaw: 'offline',
   hermes:   'offline',
+  swarm:    'offline',
   crabdeck: 'running',
 }
 
@@ -113,6 +115,8 @@ function sendTo(role, msg) {
   }
 }
 
+const mesh = createMeshRouter(clients, agentStatus, sendTo, broadcast)
+
 function requireAuthed(client, ws) {
   if (!client.authed) {
     ws.send(JSON.stringify({
@@ -170,6 +174,7 @@ wss.on('connection', (ws) => {
                    : msg.client === 'openclaw'       ? 'openclaw'
                    : msg.client === 'hermes'         ? 'hermes'
                    : msg.client === 'orchestrator'   ? 'orchestrator'
+                   : msg.client === 'swarm'          ? 'swarm'
                    : 'unknown'
         client.role = role
 
@@ -182,6 +187,11 @@ wss.on('connection', (ws) => {
           agentStatus.hermes = 'running'
           broadcast({ type: 'AGENT_STATUS', agent: 'hermes', status: 'running' })
           console.log('[hermes] registered')
+        }
+        if (role === 'swarm') {
+          agentStatus.swarm = 'running'
+          broadcast({ type: 'AGENT_STATUS', agent: 'swarm', status: 'running' })
+          console.log('[swarm] registered')
         }
         ws.send(JSON.stringify({ type: 'ACK', clientId: id, role }))
         break
@@ -236,8 +246,13 @@ wss.on('connection', (ws) => {
         break
       }
 
-      // ── Anything else: only authenticated clients may broadcast ──────────
+      // ── Swarm mesh (RAG + peer collaboration) ─────────────────────────────
       default:
+        if (isSwarmType(type)) {
+          if (!requireAuthed(client, ws)) break
+          mesh.handleSwarmMessage(client, ws, msg)
+          break
+        }
         if (!requireAuthed(client, ws)) break
         broadcast({ type, agent, payload, from: id }, id)
     }
@@ -245,7 +260,7 @@ wss.on('connection', (ws) => {
 
   ws.on('close', () => {
     const c = clients.get(id)
-    if (c && (c.role === 'openclaw' || c.role === 'hermes')) {
+    if (c && (c.role === 'openclaw' || c.role === 'hermes' || c.role === 'swarm')) {
       agentStatus[c.role] = 'offline'
       broadcast({ type: 'AGENT_STATUS', agent: c.role, status: 'offline' })
     }

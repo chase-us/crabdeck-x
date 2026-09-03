@@ -76,9 +76,15 @@ CrabDeck Gateway (Node.js + Express /health /metrics)
      ▼               ▼               ▼
  Hermes Agent    OpenClaw Agent   Shell Cracked :7070
  (offloaded      (offloaded       SQLite + vector memory
-  Ollama I/O)     task I/O)       bHive heartbeats
-     │               │
-     ▼               ▼
+  Ollama I/O)     task I/O)       bHive heartbeats + RAG query
+     │               │                    ▲
+     │               │                    │ retrieve / store
+     └───────┬───────┘                    │
+             ▼                            │
+      Swarm Coordinator ─── RAG + mesh delegation
+      (hermes + openclaw collaborate)
+             │
+             ▼
  Ollama :11434   System / OpenClaw.app
  (llama3/crabdeck)
 
@@ -108,6 +114,13 @@ Health REST:
 - Reports `TASK_RESULT` back to the UI
 - Heartbeats every 10 s with `bhive_slot`; task excerpts go to the vault when reachable
 
+### 🕸️ Swarm — `agents/swarm_agent.py`
+- Connects to Gateway as `swarm` — mesh coordinator for collaborative runs
+- Receives `SWARM_GOAL` → retrieves RAG context from Shell Cracked → delegates to Hermes + OpenClaw
+- Collects `SWARM_PEER_RESPONSE` messages, synthesizes a final answer via Ollama
+- Publishes `SWARM_RESULT` to the UI; stores swarm memory for future RAG retrieval
+- See [`artifacts/SWARM_MESH_PROTOCOL.md`](artifacts/SWARM_MESH_PROTOCOL.md)
+
 ---
 
 ## 📡 Services
@@ -120,6 +133,7 @@ Health REST:
 | Orchestrator | 8000 | `cd orchestrator && .venv/Scripts/uvicorn main:app --port 8000` |
 | Hermes Agent | — | `cd agents && .venv/Scripts/python hermes_agent.py` |
 | OpenClaw Agent | — | `cd agents && .venv/Scripts/python openclaw_agent.py` |
+| Swarm Agent | — | `cd agents && .venv/Scripts/python swarm_agent.py` |
 | Ollama | 11434 | `ollama serve` |
 
 ---
