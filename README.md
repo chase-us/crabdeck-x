@@ -116,9 +116,13 @@ Health REST:
 
 ### 🕸️ Swarm — `agents/swarm_agent.py`
 - Connects to Gateway as `swarm` — mesh coordinator for collaborative runs
-- Receives `SWARM_GOAL` → retrieves RAG context from Shell Cracked → delegates to Hermes + OpenClaw
+- Receives `SWARM_GOAL` → retrieves RAG context from Shell Cracked → **parallel** delegates to Hermes + OpenClaw
+- Weighted round-robin load balancer (`agents/load_balancer.py`) — RAM pressure + per-agent token caps
+- RAG gates: mesh recall ≥ `0.45` (`RAG_MESH_MIN_SCORE`), session recall ≥ `0.82` (`RAG_SESSION_MIN_SCORE`)
+- REST dispatch: `POST /api/swarm/dispatch` (sync or `async: true`) with JSON timeout/offline errors
 - Collects `SWARM_PEER_RESPONSE` messages, synthesizes a final answer via Ollama
 - Publishes `SWARM_RESULT` to the UI; stores swarm memory for future RAG retrieval
+- Smoke: `bash scripts/smoke-swarm.sh` (set `SMOKE_LIVE_DISPATCH=1` for async probe)
 - See [`artifacts/SWARM_MESH_PROTOCOL.md`](artifacts/SWARM_MESH_PROTOCOL.md)
 
 ---

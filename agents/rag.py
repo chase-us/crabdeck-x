@@ -12,7 +12,12 @@ from typing import Any
 VAULT_URL = os.environ.get("VAULT_URL", "http://localhost:7070").rstrip("/")
 VAULT_TOKEN = os.environ.get("VAULT_TOKEN") or os.environ.get("GATEWAY_TOKEN")
 RAG_TOP_K = int(os.environ.get("RAG_TOP_K", "5"))
-RAG_MIN_SCORE = float(os.environ.get("RAG_MIN_SCORE", "0.15"))
+RAG_MESH_MIN_SCORE = float(os.environ.get("RAG_MESH_MIN_SCORE", "0.45"))
+RAG_SESSION_MIN_SCORE = float(os.environ.get("RAG_SESSION_MIN_SCORE", "0.82"))
+# Back-compat: RAG_MIN_SCORE overrides mesh gate when set explicitly
+RAG_MIN_SCORE = float(
+    os.environ.get("RAG_MIN_SCORE", str(RAG_MESH_MIN_SCORE))
+)
 
 
 def _vault_headers() -> dict[str, str]:
@@ -22,7 +27,20 @@ def _vault_headers() -> dict[str, str]:
     return headers
 
 
-def query_memory(query: str, n: int = RAG_TOP_K) -> list[dict[str, Any]]:
+def threshold_for_profile(profile: str = "mesh") -> float:
+    """mesh gate (0.45 default) vs session recall (0.82 default)."""
+    if profile == "session":
+        return RAG_SESSION_MIN_SCORE
+    return RAG_MIN_SCORE
+
+
+def query_memory(
+    query: str,
+    n: int = RAG_TOP_K,
+    *,
+    min_score: float | None = None,
+    profile: str = "mesh",
+) -> list[dict[str, Any]]:
     """Query Shell Cracked vector memory. Returns [] on failure (fail-open)."""
     if not isinstance(query, str) or not query.strip():
         return []
@@ -43,12 +61,13 @@ def query_memory(query: str, n: int = RAG_TOP_K) -> list[dict[str, Any]]:
     hits = data.get("hits") if isinstance(data, dict) else None
     if not isinstance(hits, list):
         return []
+    gate = min_score if min_score is not None else threshold_for_profile(profile)
     filtered: list[dict[str, Any]] = []
     for hit in hits:
         if not isinstance(hit, dict):
             continue
         score = hit.get("score", 0.0)
-        if isinstance(score, (int, float)) and score >= RAG_MIN_SCORE:
+        if isinstance(score, (int, float)) and score >= gate:
             filtered.append(hit)
     return filtered
 
@@ -74,9 +93,14 @@ def format_context(hits: list[dict[str, Any]], max_chars: int = 4000) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def retrieve_context(query: str, n: int = RAG_TOP_K) -> tuple[str, list[dict[str, Any]]]:
+def retrieve_context(
+    query: str,
+    n: int = RAG_TOP_K,
+    *,
+    profile: str = "mesh",
+) -> tuple[str, list[dict[str, Any]]]:
     """Retrieve and format RAG context for injection into prompts."""
-    hits = query_memory(query, n=n)
+    hits = query_memory(query, n=n, profile=profile)
     return format_context(hits), hits
 
 

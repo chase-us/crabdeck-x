@@ -23,6 +23,7 @@ const { randomUUID } = crypto
 const bhive = require('./bhive')
 const { ingestHeartbeat } = require('./vault_client')
 const { isSwarmType, createMeshRouter } = require('./swarm')
+const { createSwarmRouter } = require('./swarm-router')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
@@ -115,7 +116,17 @@ function sendTo(role, msg) {
   }
 }
 
-const mesh = createMeshRouter(clients, agentStatus, sendTo, broadcast)
+let onSwarmResult = null
+const mesh = createMeshRouter(clients, agentStatus, sendTo, broadcast, (msg) => {
+  if (onSwarmResult) onSwarmResult(msg)
+})
+const swarmApi = createSwarmRouter({
+  agentStatus,
+  sendToAgent: mesh.sendToAgent,
+  meshOnlineStatus: mesh.meshOnlineStatus,
+})
+onSwarmResult = swarmApi.resolveDispatchResult
+app.use('/api/swarm', swarmApi.router)
 
 function requireAuthed(client, ws) {
   if (!client.authed) {

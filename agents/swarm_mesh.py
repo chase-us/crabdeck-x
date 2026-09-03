@@ -161,7 +161,7 @@ def build_mesh_status(online: dict[str, str]) -> dict[str, Any]:
 async def prepare_swarm_task(goal: str, model: str = "llama3", session_id: str | None = None) -> SwarmTask:
     """Retrieve RAG context and decompose a goal for mesh collaboration."""
     sid = session_id or new_session_id()
-    ctx, hits = retrieve_context(goal)
+    ctx, hits = retrieve_context(goal, profile="mesh")
     task = SwarmTask(
         task_id=new_task_id(),
         goal=goal,

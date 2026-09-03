@@ -24,6 +24,14 @@ import websockets
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
 from rag import inject_rag, retrieve_context
+from load_balancer import (
+    acquire_token,
+    can_dispatch,
+    order_subtasks,
+    release_token,
+    snapshot as lb_snapshot,
+    DISPATCH_TIMEOUT_SEC,
+)
 from swarm_mesh import (
     MSG_SWARM_DELEGATE,
     MSG_SWARM_GOAL,
@@ -47,7 +55,7 @@ OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://localhost:11434")
 DEFAULT_MODEL = os.environ.get("DEFAULT_MODEL", "llama3")
 HEARTBEAT_EVERY = 10
 RECONNECT_DELAY = 5
-DELEGATE_TIMEOUT = 90.0
+DELEGATE_TIMEOUT = DISPATCH_TIMEOUT_SEC
 
 _active_tasks: dict[str, SwarmTask] = {}
 _pending_peers: dict[str, asyncio.Future[str]] = {}
@@ -102,9 +110,16 @@ async def dispatch_swarm_goal(ws, msg: dict) -> None:
         "payload": {"rag_context": task.rag_context, "goal": goal},
     }))
 
-    # Delegate subtasks to Hermes and OpenClaw sequentially (collect peer results)
-    for sub in task.subtasks:
+    ordered = order_subtasks(task.subtasks)
+    print(f"[Swarm] load balancer: {lb_snapshot()}")
+
+    async def delegate_one(sub: dict[str, str]) -> tuple[str, str]:
         target = sub["agent"]
+        allowed, reason = can_dispatch(target)
+        if not allowed:
+            return target, f"[skipped] {reason}"
+        if not acquire_token(target):
+            return target, f"[skipped] {target} at token cap"
         instruction = sub["instruction"]
         delegate = build_delegate_message(
             task_id=task.task_id,
@@ -116,16 +131,22 @@ async def dispatch_swarm_goal(ws, msg: dict) -> None:
             from_agent="swarm",
         )
         peer_key = f"{task.task_id}:{target}"
-        future: asyncio.Future[str] = asyncio.get_event_loop().create_future()
+        loop = asyncio.get_event_loop()
+        future: asyncio.Future[str] = loop.create_future()
         _pending_peers[peer_key] = future
         await ws.send(json.dumps(delegate))
         try:
             result = await asyncio.wait_for(future, timeout=DELEGATE_TIMEOUT)
-            task.results[target] = result
+            return target, result
         except asyncio.TimeoutError:
-            task.results[target] = f"[timeout] {target} did not respond within {DELEGATE_TIMEOUT}s"
+            return target, f"[timeout] {target} did not respond within {DELEGATE_TIMEOUT}s"
         finally:
             _pending_peers.pop(peer_key, None)
+            release_token(target)
+
+    pairs = await asyncio.gather(*[delegate_one(sub) for sub in ordered])
+    for agent, result in pairs:
+        task.results[agent] = result
 
     synthesis = await run_blocking(ollama_synthesize, goal, task.results, model)
     result_msg = build_swarm_result(task, synthesis)

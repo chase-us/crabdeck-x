@@ -433,13 +433,13 @@ export default function CrabDeck() {
                 ) : (
                   <div style={{ color:'#334155', fontSize:12, marginTop:40, textAlign:'center' }}>
                     {agentHealth['swarm'] === 'running'
-                      ? 'Swarm coordinator online. Send a collaborative goal — Hermes + OpenClaw will work together with shared RAG context.'
+                      ? 'Swarm coordinator online. Send a collaborative goal — Hermes + OpenClaw run in parallel with shared RAG context (WRR load balancer).'
                       : '⚠ Swarm offline. Run: python agents/swarm_agent.py'}
                   </div>
                 )}
                 {swarmLoading && (
                   <div style={{ color:'#22d3ee', fontSize:12, marginTop:16 }}>
-                    🕸️ Coordinating mesh — retrieving RAG context, delegating to peers…
+                    🕸️ Coordinating mesh — RAG retrieve, parallel delegate (Hermes + OpenClaw), synthesize…
                   </div>
                 )}
               </div>

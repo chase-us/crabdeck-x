@@ -18,7 +18,7 @@ function isSwarmType(type) {
   return SWARM_TYPES.has(type)
 }
 
-function createMeshRouter(clients, agentStatus, sendTo, broadcast) {
+function createMeshRouter(clients, agentStatus, sendTo, broadcast, onSwarmResult) {
   function sendToAgent(role, msg) {
     for (const [, c] of clients) {
       if (c.role === role && c.authed && c.ws.readyState === 1) {
@@ -112,6 +112,7 @@ function createMeshRouter(clients, agentStatus, sendTo, broadcast) {
 
     if (type === 'SWARM_RESULT') {
       console.log(`[swarm] result task=${msg.task_id}`)
+      if (typeof onSwarmResult === 'function') onSwarmResult(msg)
       sendTo('ui', msg)
       broadcastToMesh({ type: 'SWARM_CONTEXT', session_id: msg.session_id, payload: msg.payload }, client.id)
       return true
