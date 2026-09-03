@@ -1,7 +1,10 @@
 """
-OpenClaw Agent v2.2 — CrabDeck Sovereign Node
+OpenClaw Agent v2.3 — CrabDeck Sovereign Node
 Connects to CrabDeck Gateway, receives TASK events, executes via Hermes/Ollama reasoning,
 reports back TASK_RESULT. Integrates with OpenClaw.app via local HTTP if available.
+As a swarm mesh peer it answers SWARM_ROUND with SWARM_CONTRIBUTION and direct MESH asks.
+Swarm rounds are advisory only: they use a plain generate path with no <CMD> parsing,
+so a swarm goal can never trigger shell execution regardless of ENABLE_SHELL_EXEC.
 
 Run:
     pip install -r requirements.txt
@@ -38,7 +41,8 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
-from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
+from swarm import dispatch_mesh, dispatch_swarm_round
+from vault_client import emit_heartbeat, emit_memory, heartbeat_payload, retrieve_memory
 
 GATEWAY_URL       = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN     = os.environ.get("GATEWAY_TOKEN")
@@ -105,6 +109,19 @@ def run_shell(cmd: str) -> str:
     except Exception as e:
         return f"[error] {e}"
 
+def ollama_generate(prompt: str, model: str = DEFAULT_MODEL) -> str:
+    """Plain completion for swarm rounds / mesh replies. Output is never parsed for <CMD>."""
+    try:
+        r = requests.post(
+            f"{OLLAMA_URL}/api/generate",
+            json={"model": model, "prompt": prompt, "stream": False},
+            timeout=120,
+        )
+        r.raise_for_status()
+        return r.json().get("response", "(no response)")
+    except Exception as e:
+        return f"[OpenClaw error] Ollama call failed: {e}"
+
 def ollama_reason(task: str, model: str = DEFAULT_MODEL) -> str:
     """Use Ollama to reason about a task and produce an action."""
     cmd_instructions = (
@@ -169,7 +186,7 @@ async def run():
     while True:
         try:
             async with websockets.connect(GATEWAY_URL) as ws:
-                hello = {"type": "HELLO", "client": "openclaw", "version": "2.2", "system": info}
+                hello = {"type": "HELLO", "client": "openclaw", "version": "2.3", "system": info}
                 if GATEWAY_TOKEN:
                     hello["token"] = GATEWAY_TOKEN
                 await ws.send(json.dumps(hello))
@@ -202,6 +219,22 @@ async def run():
 
                     if mtype == "TASK":
                         await dispatch_task(ws, msg)
+                    elif mtype == "SWARM_ROUND":
+                        await dispatch_swarm_round(
+                            ws, msg, agent="openclaw", generate=ollama_generate,
+                            retrieve=retrieve_memory, default_model=DEFAULT_MODEL,
+                        )
+                    elif mtype == "MESH":
+                        await dispatch_mesh(
+                            ws, msg, agent="openclaw", generate=ollama_generate,
+                            remember=emit_memory, default_model=DEFAULT_MODEL,
+                        )
+                    elif mtype == "SWARM_PEER":
+                        peer = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+                        print(f"[OpenClaw] peer {peer.get('from', '?')} r{peer.get('round', '?')}: {str(peer.get('text', ''))[:60]}")
+                    elif mtype == "MESH_PEERS":
+                        peers = msg.get("payload", {}).get("peers", []) if isinstance(msg.get("payload"), dict) else []
+                        print(f"[OpenClaw] mesh peers: {', '.join(peers) or 'none'}")
                     elif mtype == "WELCOME":
                         print(f"[OpenClaw] Gateway: {msg.get('message', '')}")
                     elif mtype == "ERROR":

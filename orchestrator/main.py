@@ -1,6 +1,11 @@
 """
-CrabDeck Orchestrator Core v2.2
-FastAPI agent health tracker + CrabDeck Gateway bridge
+CrabDeck Orchestrator Core v2.3
+FastAPI agent health tracker + CrabDeck Gateway bridge + swarm mesh peer
+
+As a swarm peer the orchestrator needs no LLM: it answers every SWARM_ROUND with a
+deterministic health digest (agent status, watchdog misses, recent events) so the
+LLM peers reason against live operational facts, and it answers direct MESH asks
+with the same digest.
 
 Run: uvicorn main:app --reload --port 8000
 
@@ -81,6 +86,99 @@ def heartbeat_loop():
                 add_event("HEARTBEAT_MISSED", f"{agent.name} missed heartbeat", agent_id)
         time.sleep(HEARTBEAT_INTERVAL)
 
+# ── Swarm mesh peer ──────────────────────────────────────────────────────────
+SWARM_DIGEST_EVENTS = 5
+SWARM_MAX_TEXT = 6000
+
+def swarm_digest(agent_map: Dict[str, Agent], event_log: List[Event], round_no: int = 1,
+                 peers: Optional[List[str]] = None, contributions: Optional[Dict[str, str]] = None,
+                 now: Optional[float] = None) -> str:
+    """Deterministic operational digest the orchestrator contributes to a swarm round."""
+    if not isinstance(agent_map, dict):
+        raise TypeError("agent_map must be a dict")
+    if not isinstance(event_log, list):
+        raise TypeError("event_log must be a list")
+    ts = time.time() if now is None else float(now)
+    lines: List[str] = [f"Orchestrator health digest (round {round_no}, bhive slot {int(ts // 60)}):"]
+    running = 0
+    for agent_id in sorted(agent_map):
+        a = agent_map[agent_id]
+        age = max(0.0, ts - a.last_heartbeat)
+        flag = "" if a.status == "running" else f" ({a.error_message})" if a.error_message else ""
+        lines.append(f"- {agent_id}: {a.status}{flag}, last heartbeat {age:.0f}s ago")
+        if a.status == "running":
+            running += 1
+    lines.append(f"{running}/{len(agent_map)} agents running.")
+    if peers:
+        missing = [p for p in ("hermes", "openclaw") if p in peers and agent_map.get(p) is not None
+                   and agent_map[p].status != "running"]
+        if missing:
+            lines.append(f"Constraint: swarm peer(s) {', '.join(missing)} are not healthy — treat their output as stale.")
+    recent = [e for e in event_log if e.type != "SYSTEM"][-SWARM_DIGEST_EVENTS:]
+    if recent:
+        lines.append("Recent events:")
+        for e in reversed(recent):
+            lines.append(f"  · [{e.type}] {e.message}")
+    if contributions:
+        lines.append(f"Peers contributed last round: {', '.join(sorted(contributions))}. "
+                     "Any action they propose should wait until every required agent is running.")
+    text = "\n".join(lines)
+    return text if len(text) <= SWARM_MAX_TEXT else text[:SWARM_MAX_TEXT]
+
+
+def _swarm_round_payload(msg: dict) -> Optional[dict]:
+    raw = msg.get("payload") if isinstance(msg, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    session_id = raw.get("session_id")
+    if not isinstance(session_id, str) or not session_id.strip():
+        return None
+    rnd = raw.get("round")
+    peers = raw.get("peers")
+    contributions = raw.get("contributions")
+    return {
+        "session_id": session_id.strip(),
+        "round": rnd if isinstance(rnd, int) and rnd >= 1 else 1,
+        "peers": [p for p in peers if isinstance(p, str)] if isinstance(peers, list) else [],
+        "contributions": {k: v for k, v in contributions.items() if isinstance(k, str) and isinstance(v, str)}
+                         if isinstance(contributions, dict) else {},
+    }
+
+
+async def handle_swarm_round(ws, msg: dict) -> Optional[str]:
+    rnd = _swarm_round_payload(msg)
+    if rnd is None:
+        return None
+    text = swarm_digest(agents, events, rnd["round"], rnd["peers"], rnd["contributions"])
+    await ws.send(json.dumps({
+        "type": "SWARM_CONTRIBUTION",
+        "agent": "orchestrator",
+        "payload": {"session_id": rnd["session_id"], "round": rnd["round"], "text": text},
+    }))
+    add_event("SWARM", f"contributed health digest to swarm {rnd['session_id'][:8]} round {rnd['round']}", "orchestrator")
+    return text
+
+
+async def handle_mesh(ws, msg: dict) -> Optional[str]:
+    sender = msg.get("from") if isinstance(msg, dict) else None
+    raw = msg.get("payload") if isinstance(msg, dict) else None
+    payload = raw if isinstance(raw, dict) else {"text": raw}
+    if not isinstance(sender, str) or not sender.strip():
+        return None
+    text = payload.get("text")
+    if not isinstance(text, str) or not text.strip():
+        return None
+    if payload.get("intent") != "ask":
+        add_event("MESH", f"{sender} → orchestrator: {text.strip()[:80]}", "orchestrator")
+        return None
+    reply = swarm_digest(agents, events)
+    out = {"intent": "tell", "text": reply}
+    if isinstance(payload.get("session_id"), str) and payload["session_id"].strip():
+        out["session_id"] = payload["session_id"].strip()
+    await ws.send(json.dumps({"type": "MESH", "agent": "orchestrator", "to": sender.strip(), "payload": out}))
+    return reply
+
+
 def emit_vault_heartbeat(agent: str = "orchestrator") -> None:
     ts = time.time()
     body = json.dumps({
@@ -142,6 +240,13 @@ async def listen_gateway():
                                     agents[agent_id].status         = status
                                     agents[agent_id].last_heartbeat = time.time()
                                     add_event("AGENT_STATUS", f"{agent_id} → {status}", agent_id)
+                            elif msg.get("type") == "SWARM_ROUND":
+                                await handle_swarm_round(ws, msg)
+                            elif msg.get("type") == "MESH":
+                                await handle_mesh(ws, msg)
+                            elif msg.get("type") == "MESH_PEERS":
+                                peers = msg.get("payload", {}).get("peers", []) if isinstance(msg.get("payload"), dict) else []
+                                add_event("MESH", f"mesh peers: {', '.join(peers) or 'none'}", None)
                         except Exception:
                             pass
                 finally:
@@ -162,7 +267,7 @@ async def lifespan(app: FastAPI):
     yield
     gateway_task.cancel()
 
-app = FastAPI(title="CrabDeck Orchestrator", version="2.2.0", lifespan=lifespan)
+app = FastAPI(title="CrabDeck Orchestrator", version="2.3.0", lifespan=lifespan)
 
 # CORS: locked to ALLOWED_ORIGINS instead of "*". Set ALLOWED_ORIGINS in the
 # environment to your real frontend origin(s) before deploying publicly.

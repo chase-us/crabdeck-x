@@ -23,3 +23,13 @@ test('ingestHeartbeat rejects blank agent without throwing', async () => {
   assert.equal(await ingestHeartbeat({ agent: '  ' }), null)
   assert.equal(await ingestHeartbeat({ agent: 12 }), null)
 })
+
+test('vault RAG helpers validate input without touching the network', async () => {
+  const { queryMemory, ingestMemory, upsertSession } = require('./vault_client')
+  assert.deepEqual(await queryMemory('   '), [])
+  assert.deepEqual(await queryMemory(42), [])
+  assert.equal(await ingestMemory({ agent: 'crabdeck', kind: '', text: 'x' }), null)
+  assert.equal(await ingestMemory({ agent: 'crabdeck', kind: 'swarm_result', text: '  ' }), null)
+  assert.equal(await upsertSession('', {}), null)
+  assert.equal(await upsertSession('s1', ['not', 'a', 'dict']), null)
+})

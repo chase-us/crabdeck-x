@@ -1,6 +1,8 @@
 """
-Hermes Agent v2.2 — CrabDeck LLM Messenger
+Hermes Agent v2.3 — CrabDeck LLM Messenger + swarm synthesizer
 Connects to CrabDeck Gateway, receives PROMPT events, calls Ollama, returns HERMES_RESPONSE.
+As a swarm mesh peer it answers SWARM_ROUND with SWARM_CONTRIBUTION, closes sessions
+with SWARM_SYNTHESIS, and answers direct MESH asks from other agents.
 
 Run:
     pip install -r requirements.txt
@@ -20,7 +22,8 @@ import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from offload import run_blocking
-from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
+from swarm import dispatch_mesh, dispatch_swarm_round, dispatch_swarm_synthesize
+from vault_client import emit_heartbeat, emit_memory, heartbeat_payload, retrieve_memory
 
 GATEWAY_URL      = os.environ.get("GATEWAY_URL", "ws://localhost:8765")
 GATEWAY_TOKEN    = os.environ.get("GATEWAY_TOKEN")  # None in local/dev mode
@@ -66,7 +69,7 @@ async def run():
     while True:
         try:
             async with websockets.connect(GATEWAY_URL) as ws:
-                hello = {"type": "HELLO", "client": "hermes", "version": "2.2"}
+                hello = {"type": "HELLO", "client": "hermes", "version": "2.3"}
                 if GATEWAY_TOKEN:
                     hello["token"] = GATEWAY_TOKEN
                 await ws.send(json.dumps(hello))
@@ -100,6 +103,26 @@ async def run():
                         await dispatch_prompt(ws, msg)
                     elif mtype == "TOOL_REQUEST":
                         await dispatch_tool_request(ws, msg)
+                    elif mtype == "SWARM_ROUND":
+                        await dispatch_swarm_round(
+                            ws, msg, agent="hermes", generate=ollama_generate,
+                            retrieve=retrieve_memory, default_model=DEFAULT_MODEL,
+                        )
+                    elif mtype == "SWARM_SYNTHESIZE":
+                        await dispatch_swarm_synthesize(
+                            ws, msg, agent="hermes", generate=ollama_generate, default_model=DEFAULT_MODEL,
+                        )
+                    elif mtype == "MESH":
+                        await dispatch_mesh(
+                            ws, msg, agent="hermes", generate=ollama_generate,
+                            remember=emit_memory, default_model=DEFAULT_MODEL,
+                        )
+                    elif mtype == "SWARM_PEER":
+                        peer = msg.get("payload", {}) if isinstance(msg.get("payload"), dict) else {}
+                        print(f"[Hermes] peer {peer.get('from', '?')} r{peer.get('round', '?')}: {str(peer.get('text', ''))[:60]}")
+                    elif mtype == "MESH_PEERS":
+                        peers = msg.get("payload", {}).get("peers", []) if isinstance(msg.get("payload"), dict) else []
+                        print(f"[Hermes] mesh peers: {', '.join(peers) or 'none'}")
                     elif mtype == "ERROR":
                         print(f"[Hermes] Gateway error: {msg.get('message')}")
 

@@ -13,6 +13,16 @@
  *     traffic, or call itself "crabdeck-ui" and push TASK/PROMPT to agents.
  *   - Role is locked once set (no re-HELLO to swap identity mid-session).
  *   - Optional Origin allow-list for browser-originated (UI) connections.
+ *
+ * Swarm mesh (see artifacts/SWARM_MESH_PROTOCOL.md):
+ *   - SWARM_TASK fans a goal out to every connected agent role as SWARM_ROUND,
+ *     seeded with RAG context retrieved from Shell Cracked.
+ *   - SWARM_CONTRIBUTION is echoed to the other peers (SWARM_PEER) and to the UI;
+ *     when every peer has spoken (or the round times out) the next round opens
+ *     with the previous round's contributions attached, so peers build on and
+ *     critique each other. The final round is synthesized by Hermes and the
+ *     result is written back into the vault as new memory.
+ *   - MESH is a direct peer-to-peer frame between agent roles.
  */
 
 const { WebSocketServer, WebSocket } = require('ws')
@@ -21,12 +31,16 @@ const express = require('express')
 const crypto = require('crypto')
 const { randomUUID } = crypto
 const bhive = require('./bhive')
-const { ingestHeartbeat } = require('./vault_client')
+const swarm = require('./swarm')
+const { ingestHeartbeat, queryMemory, ingestMemory, upsertSession } = require('./vault_client')
 
 const PORT          = process.env.PORT || 8765
 const GATEWAY_TOKEN  = process.env.GATEWAY_TOKEN || null
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://127.0.0.1:5173')
   .split(',').map(s => s.trim()).filter(Boolean)
+const SWARM_RAG_HITS = Number.parseInt(process.env.SWARM_RAG_HITS || '5', 10) || 5
+const SWARM_RAG_MIN_SCORE = Number.parseFloat(process.env.SWARM_RAG_MIN_SCORE || '0') || 0
+const SWARM_ROUND_TIMEOUT_MS = Number.parseInt(process.env.SWARM_ROUND_TIMEOUT_MS || '', 10) || swarm.ROUND_TIMEOUT_MS
 
 if (!GATEWAY_TOKEN) {
   console.warn(`
@@ -49,6 +63,16 @@ const agentStatus = {
   crabdeck: 'running',
 }
 
+// ── Swarm mesh sessions ────────────────────────────────────────────────────
+const swarms = new Map()        // session id → session (see swarm.js)
+const swarmTimers = new Map()   // session id → round timeout handle
+
+function swarmSummary() {
+  let active = 0
+  for (const s of swarms.values()) if (s.status === 'running' || s.status === 'synthesizing') active += 1
+  return { active, total: swarms.size, peers: swarm.meshRoster(clients) }
+}
+
 function healthPayload() {
   return {
     status:       'ok',
@@ -58,6 +82,7 @@ function healthPayload() {
     bhive_slot:   bhive.minuteSlot(),
     uptime:       process.uptime(),
     vault:        process.env.VAULT_URL || 'http://localhost:7070',
+    swarm:        swarmSummary(),
   }
 }
 
@@ -77,6 +102,17 @@ app.get('/metrics', (_req, res) => {
     })
   }
   res.json({ agentStatus, clients: list, slot: bhive.minuteSlot(now) })
+})
+app.get('/swarm', (_req, res) => {
+  const sessions = [...swarms.values()]
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .map(swarm.summary)
+  res.json({ ...swarmSummary(), sessions })
+})
+app.get('/swarm/:id', (req, res) => {
+  const s = swarms.get(String(req.params.id))
+  if (!s) return res.status(404).json({ error: 'swarm session not found' })
+  res.json(swarm.resultPayload(s))
 })
 
 const httpServer = http.createServer(app)
@@ -123,6 +159,194 @@ function requireAuthed(client, ws) {
     return false
   }
   return true
+}
+
+function sendError(ws, code, message) {
+  ws.send(JSON.stringify({ type: 'ERROR', code, message }))
+}
+
+// ── Mesh roster ────────────────────────────────────────────────────────────
+function broadcastPeers() {
+  const peers = swarm.meshRoster(clients)
+  const frame = { type: 'MESH_PEERS', payload: { peers, bhive_slot: bhive.minuteSlot() } }
+  for (const role of swarm.SWARM_ROLES) sendTo(role, frame)
+  sendTo('ui', frame)
+}
+
+// ── Swarm orchestration ────────────────────────────────────────────────────
+function clearSwarmTimer(sessionId) {
+  const t = swarmTimers.get(sessionId)
+  if (t) clearTimeout(t)
+  swarmTimers.delete(sessionId)
+}
+
+function armSwarmTimer(session) {
+  clearSwarmTimer(session.id)
+  const round = session.round
+  swarmTimers.set(session.id, setTimeout(() => {
+    const live = swarms.get(session.id)
+    if (!live || live.status !== 'running' || live.round !== round) return
+    const cur = swarm.currentRound(live)
+    const silent = live.participants.filter((p) => !Object.prototype.hasOwnProperty.call(cur.contributions, p))
+    console.log(`[swarm] ${live.id.slice(0, 8)} round ${round} timed out — silent: ${silent.join(', ') || 'none'}`)
+    advanceSwarm(live)
+  }, SWARM_ROUND_TIMEOUT_MS))
+}
+
+function openSwarmRound(session) {
+  const payload = swarm.roundPayload(session)
+  for (const role of session.participants) sendTo(role, { type: 'SWARM_ROUND', payload })
+  sendTo('ui', { type: 'SWARM_ROUND', payload })
+  armSwarmTimer(session)
+}
+
+function persistSwarm(session) {
+  const result = swarm.resultPayload(session)
+  void upsertSession(`swarm:${session.id}`, result)
+  if (session.status === 'done' && session.result) {
+    void ingestMemory({
+      agent: 'crabdeck',
+      kind: 'swarm_result',
+      text: `${session.goal.slice(0, 1200)}\n---\n${session.result.slice(0, 6000)}`,
+      metadata: {
+        session_id: session.id,
+        peers: session.participants.join(','),
+        rounds: session.rounds.length,
+        synthesized_by: session.synthesizedBy,
+      },
+    })
+  }
+}
+
+function finishSwarm(session, text, synthesizedBy) {
+  clearSwarmTimer(session.id)
+  if (!swarm.finalize(session, text, synthesizedBy)) return
+  const payload = swarm.resultPayload(session)
+  sendTo('ui', { type: 'SWARM_RESULT', payload })
+  for (const role of session.participants) sendTo(role, { type: 'SWARM_RESULT', payload })
+  console.log(`[swarm] ${session.id.slice(0, 8)} done via ${session.synthesizedBy} (${payload.transcript.length} contributions)`)
+  persistSwarm(session)
+  swarm.prune(swarms)
+}
+
+function failSwarm(session, reason) {
+  clearSwarmTimer(session.id)
+  if (!swarm.fail(session, reason)) return
+  const payload = swarm.resultPayload(session)
+  sendTo('ui', { type: 'SWARM_RESULT', payload })
+  console.warn(`[swarm] ${session.id.slice(0, 8)} failed: ${session.error}`)
+  persistSwarm(session)
+  swarm.prune(swarms)
+}
+
+function requestSynthesis(session) {
+  clearSwarmTimer(session.id)
+  const roster = swarm.meshRoster(clients)
+  if (!roster.includes('hermes')) {
+    finishSwarm(session, '', 'gateway')
+    return
+  }
+  const payload = swarm.synthesizePayload(session)
+  sendTo('hermes', { type: 'SWARM_SYNTHESIZE', payload })
+  sendTo('ui', { type: 'SWARM_SYNTHESIZING', payload: { session_id: session.id, synthesizer: 'hermes' } })
+  swarmTimers.set(session.id, setTimeout(() => {
+    const live = swarms.get(session.id)
+    if (live && live.status === 'synthesizing') {
+      console.warn(`[swarm] ${live.id.slice(0, 8)} synthesizer timed out — falling back to transcript digest`)
+      finishSwarm(live, '', 'gateway')
+    }
+  }, SWARM_ROUND_TIMEOUT_MS))
+}
+
+function advanceSwarm(session) {
+  const next = swarm.advance(session)
+  if (next === 'round') {
+    console.log(`[swarm] ${session.id.slice(0, 8)} → round ${session.round}/${session.maxRounds}`)
+    openSwarmRound(session)
+  } else if (next === 'synthesize') {
+    requestSynthesis(session)
+  } else if (next === 'failed') {
+    failSwarm(session, session.error)
+  }
+}
+
+async function startSwarm(client, ws, payload) {
+  const task = swarm.normalizeTask(payload)
+  if (!task) {
+    sendError(ws, 'BAD_SWARM_TASK', 'SWARM_TASK requires a non-empty goal.')
+    return
+  }
+  const participants = swarm.meshRoster(clients)
+  if (participants.length === 0) {
+    sendError(ws, 'NO_SWARM_PEERS', 'No agent peers are connected to the mesh.')
+    return
+  }
+  // RAG: seed the swarm with what the vault already knows about this goal. Fail-open.
+  const hits = await queryMemory(task.goal, SWARM_RAG_HITS)
+  const session = swarm.createSession({
+    goal: task.goal,
+    rounds: task.rounds,
+    model: task.model,
+    participants,
+    context: hits,
+    minScore: SWARM_RAG_MIN_SCORE,
+    from: client.role,
+  })
+  swarms.set(session.id, session)
+  swarm.prune(swarms)
+  console.log(`[swarm] ${session.id.slice(0, 8)} started by ${client.role}: "${task.goal.slice(0, 60)}" peers=${participants.join(',')} rag=${session.context.length}`)
+  sendTo('ui', {
+    type: 'SWARM_STARTED',
+    payload: { ...swarm.summary(session), context: session.context, model: session.model },
+  })
+  openSwarmRound(session)
+}
+
+function onSwarmContribution(client, ws, payload) {
+  const c = swarm.normalizeContribution(payload)
+  if (!c) {
+    sendError(ws, 'BAD_SWARM_CONTRIBUTION', 'SWARM_CONTRIBUTION requires session_id and non-empty text.')
+    return
+  }
+  const session = swarms.get(c.session_id)
+  if (!session) {
+    sendError(ws, 'UNKNOWN_SWARM', `No swarm session ${c.session_id}.`)
+    return
+  }
+  const res = swarm.recordContribution(session, client.role, c.round, c.text)
+  if (!res.accepted) {
+    console.log(`[swarm] ${session.id.slice(0, 8)} ignored ${client.role} contribution: ${res.reason}`)
+    return
+  }
+  const frame = { session_id: session.id, round: session.round, from: client.role, text: c.text }
+  sendTo('ui', { type: 'SWARM_CONTRIBUTION', payload: frame })
+  for (const role of session.participants) {
+    if (role !== client.role) sendTo(role, { type: 'SWARM_PEER', payload: frame })
+  }
+  console.log(`[swarm] ${session.id.slice(0, 8)} r${session.round} ${client.role}: ${c.text.slice(0, 60)}`)
+  if (res.roundComplete) advanceSwarm(session)
+}
+
+function onSwarmSynthesis(client, ws, payload) {
+  const c = swarm.normalizeContribution(payload)
+  if (!c) {
+    sendError(ws, 'BAD_SWARM_SYNTHESIS', 'SWARM_SYNTHESIS requires session_id and non-empty text.')
+    return
+  }
+  const session = swarms.get(c.session_id)
+  if (!session || session.status !== 'synthesizing') return
+  finishSwarm(session, c.text, client.role)
+}
+
+function onMesh(client, ws, msg) {
+  const m = swarm.normalizeMesh(msg)
+  if (!m) {
+    sendError(ws, 'BAD_MESH', 'MESH requires `to` (a swarm role) and non-empty payload.text.')
+    return
+  }
+  const frame = { type: 'MESH', from: client.role, to: m.to, payload: m.payload }
+  sendTo(m.to, frame)
+  sendTo('ui', { type: 'MESH_TRACE', payload: { from: client.role, to: m.to, ...m.payload } })
 }
 
 wss.on('connection', (ws) => {
@@ -184,6 +408,7 @@ wss.on('connection', (ws) => {
           console.log('[hermes] registered')
         }
         ws.send(JSON.stringify({ type: 'ACK', clientId: id, role }))
+        if (swarm.isRole(role) || role === 'ui') broadcastPeers()
         break
       }
 
@@ -219,6 +444,30 @@ wss.on('connection', (ws) => {
         sendTo('ui', { type: 'TASK_RESULT', payload })
         break
 
+      // ── Swarm mesh: goal fan-out to every connected peer ─────────────────
+      case 'SWARM_TASK':
+        if (!requireAuthed(client, ws)) break
+        void startSwarm(client, ws, payload)
+        break
+
+      // ── Swarm mesh: a peer's round contribution ──────────────────────────
+      case 'SWARM_CONTRIBUTION':
+        if (!requireAuthed(client, ws) || !swarm.isRole(client.role)) break
+        onSwarmContribution(client, ws, payload)
+        break
+
+      // ── Swarm mesh: synthesizer (Hermes) closes the session ──────────────
+      case 'SWARM_SYNTHESIS':
+        if (!requireAuthed(client, ws) || client.role !== 'hermes') break
+        onSwarmSynthesis(client, ws, payload)
+        break
+
+      // ── Peer-to-peer mesh frame between agent roles ──────────────────────
+      case 'MESH':
+        if (!requireAuthed(client, ws) || !swarm.isRole(client.role)) break
+        onMesh(client, ws, msg)
+        break
+
       // ── Agent heartbeat ───────────────────────────────────────────────────
       case 'HEARTBEAT': {
         if (!requireAuthed(client, ws)) break
@@ -251,6 +500,17 @@ wss.on('connection', (ws) => {
     }
     clients.delete(id)
     console.log(`[-] Client ${id} disconnected  (${clients.size} total)`)
+    if (c && swarm.isRole(c.role)) {
+      broadcastPeers()
+      // A departed peer should not stall a round: close any round it was the last holdout on.
+      const roster = swarm.meshRoster(clients)
+      for (const s of swarms.values()) {
+        if (s.status !== 'running') continue
+        const cur = swarm.currentRound(s)
+        const waitingOn = s.participants.filter((p) => !Object.prototype.hasOwnProperty.call(cur.contributions, p))
+        if (waitingOn.length > 0 && waitingOn.every((p) => !roster.includes(p))) advanceSwarm(s)
+      }
+    }
   })
 
   ws.on('error', err => console.error(`[ws] ${id} error:`, err.message))
@@ -273,10 +533,12 @@ setInterval(() => {
 httpServer.listen(PORT, () => {
   console.log(`
   ████████████████████████████████████████
-  🦀  CRABDECK GATEWAY  v2.2
+  🦀  CRABDECK GATEWAY  v2.3 — swarm mesh
       WebSocket : ws://localhost:${PORT}
       HTTP/health: http://localhost:${PORT}/health
       HTTP/metrics: http://localhost:${PORT}/metrics
+      HTTP/swarm : http://localhost:${PORT}/swarm
+      Swarm: rounds time out after ${SWARM_ROUND_TIMEOUT_MS}ms · RAG top-${SWARM_RAG_HITS} (min score ${SWARM_RAG_MIN_SCORE})
       Auth: ${GATEWAY_TOKEN ? 'ENABLED (token required)' : 'DISABLED (dev mode — set GATEWAY_TOKEN for prod)'}
   ████████████████████████████████████████
   `)

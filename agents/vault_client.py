@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any
 
@@ -59,6 +60,26 @@ def _post(path: str, body: dict[str, Any], timeout: float = 1.5) -> dict[str, An
             return parsed if isinstance(parsed, dict) else None
     except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
         return None
+
+
+def retrieve_memory(query: str, n: int = 5, timeout: float = 1.5) -> list[dict[str, Any]]:
+    """RAG retrieval: top-n vault memories for `query`. Fail-open — returns [] on any error."""
+    if not isinstance(query, str) or not query.strip():
+        return []
+    if not isinstance(n, int) or n < 1 or n > 50:
+        n = 5
+    params = urllib.parse.urlencode({"q": query.strip()[:2000], "n": n})
+    req = urllib.request.Request(f"{VAULT_URL}/v1/memory/query?{params}", method="GET")
+    req.add_header("Accept", "application/json")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read().decode("utf-8") or "{}")
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError, OSError, ValueError):
+        return []
+    hits = body.get("hits") if isinstance(body, dict) else None
+    if not isinstance(hits, list):
+        return []
+    return [h for h in hits if isinstance(h, dict) and isinstance(h.get("text"), str)]
 
 
 def emit_heartbeat(agent: str, ts: float, slot: int, source: str = "agent") -> bool:
