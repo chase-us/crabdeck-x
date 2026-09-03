@@ -215,7 +215,7 @@ export default function CrabDeck() {
   }
 
   const startSwarm = () => {
-    if (!swarmInput.trim() || swarmState?.status === 'working') return
+    if (!swarmInput.trim() || (swarmState && swarmState.status !== 'complete')) return
     if (wsRef.current?.readyState !== WebSocket.OPEN) {
       log('⚠ Gateway not connected — cannot start swarm', '#f87171')
       return
@@ -425,7 +425,7 @@ export default function CrabDeck() {
                   onKeyDown={e => e.key === 'Enter' && startSwarm()}
                   placeholder="Ask the collaborating RAG swarm…"
                   style={{ flex:1, background:'#0a1628', border:'1px solid #155e75', borderRadius:6, color:'#e2e8f0', padding:'8px 12px', fontSize:12, outline:'none' }} />
-                <button onClick={startSwarm} disabled={swarmState?.status === 'working' || gwStatus !== 'connected'}
+                <button onClick={startSwarm} disabled={(swarmState && swarmState.status !== 'complete') || gwStatus !== 'connected'}
                   style={{ background:'#0e7490', color:'#fff', border:'none', borderRadius:6, padding:'8px 18px', cursor:'pointer', fontSize:12 }}>
                   🕸️ Mesh
                 </button>
