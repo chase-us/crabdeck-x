@@ -37,6 +37,7 @@ import requests
 import websockets
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from mesh import MeshPeer
 from offload import run_blocking
 from vault_client import emit_heartbeat, emit_memory, heartbeat_payload
 
@@ -47,6 +48,10 @@ OPENCLAW_HTTP     = os.environ.get("OPENCLAW_HTTP", "http://localhost:3131")
 DEFAULT_MODEL     = os.environ.get("DEFAULT_MODEL", "llama3")
 HEARTBEAT_EVERY   = 10
 RECONNECT_DELAY   = 10
+
+# OpenClaw is the swarm's hands, not its librarian: it advertises system work
+# and asks the scribe peer when a task needs history.
+CAPABILITIES      = ["system", "inspect", "exec"]
 
 ENABLE_SHELL_EXEC = os.environ.get("ENABLE_SHELL_EXEC", "0") == "1"
 _allowlist_raw    = os.environ.get("SHELL_ALLOWLIST", "").strip()
@@ -156,6 +161,59 @@ def handle_task(payload) -> str:
 
     return response
 
+# ── Mesh: system peer ──────────────────────────────────────────────────────────
+
+def ollama_available() -> bool:
+    try:
+        return requests.get(f"{OLLAMA_URL}/api/tags", timeout=3).status_code == 200
+    except Exception:
+        return False
+
+
+def backend_healthy() -> bool:
+    """OpenClaw can serve system facts with Ollama down, but not reason well."""
+    return openclaw_available() or ollama_available()
+
+
+peer = MeshPeer("openclaw", CAPABILITIES, healthy=backend_healthy)
+
+
+def handle_award(task: str, capabilities: list, task_id: str) -> dict:
+    """Awarded a system contract."""
+    print(f"[OpenClaw] AWARD {task_id} → {str(task)[:80]}")
+    result = handle_task({"task": str(task)})
+    emit_memory(
+        "openclaw",
+        "mesh_answer",
+        f"{str(task)[:1200]}\n---\n{str(result)[:4000]}",
+        {"task_id": task_id, "capabilities": list(capabilities)},
+    )
+    # Shell exec stays off by default, so a system answer is reasoning about
+    # the host rather than a verified measurement of it.
+    return {"result": result, "confidence": 0.7 if ENABLE_SHELL_EXEC else 0.55, "ok": True}
+
+
+def handle_message(intent: str, body, sender: str):
+    """Another peer asked OpenClaw for host information."""
+    if intent == "reply":
+        return None
+    task = ""
+    if isinstance(body, dict):
+        task = body.get("task") or body.get("question") or body.get("query") or ""
+    elif isinstance(body, str):
+        task = body
+    task = str(task).strip()
+    if not task:
+        return None
+    if intent in {"system", "inspect", "message", "task"}:
+        print(f"[OpenClaw] {sender} asked to {intent}: {task[:70]}")
+        return {"result": handle_task({"task": task}), "system": system_info()}
+    return {"error": f"unsupported intent {intent!r}"}
+
+
+peer.on_award(handle_award)
+peer.on_message(handle_message)
+
 # ── Gateway loop ───────────────────────────────────────────────────────────────
 
 async def run():
@@ -169,9 +227,8 @@ async def run():
     while True:
         try:
             async with websockets.connect(GATEWAY_URL) as ws:
-                hello = {"type": "HELLO", "client": "openclaw", "version": "2.2", "system": info}
-                if GATEWAY_TOKEN:
-                    hello["token"] = GATEWAY_TOKEN
+                hello = peer.hello_payload(GATEWAY_TOKEN)
+                hello["system"] = info
                 await ws.send(json.dumps(hello))
 
                 ack_raw = await asyncio.wait_for(ws.recv(), timeout=5)
@@ -181,7 +238,8 @@ async def run():
                     await asyncio.sleep(RECONNECT_DELAY)
                     continue
 
-                print("[OpenClaw] Connected to Gateway ✅")
+                joined = (ack.get("mesh") or {}).get("joined")
+                print(f"[OpenClaw] Connected to Gateway ✅  mesh={'joined' if joined else 'observer'}  caps={CAPABILITIES}")
 
                 app_up = await run_blocking(openclaw_available)
                 await ws.send(json.dumps({
@@ -196,6 +254,9 @@ async def run():
                     try:
                         msg = json.loads(raw)
                     except Exception:
+                        continue
+
+                    if await peer.handle(ws, msg):
                         continue
 
                     mtype = msg.get("type")
@@ -251,6 +312,8 @@ async def heartbeat(ws, emit=emit_heartbeat, every=HEARTBEAT_EVERY):
         try:
             ts = time.time()
             payload = heartbeat_payload("openclaw", ts)
+            # Queue depth rides the heartbeat so the gateway can price bids.
+            payload["load"] = peer.load
             await ws.send(json.dumps(payload))
             if emit is not None:
                 await run_blocking(emit, payload["agent"], payload["ts"], payload["bhive_slot"], "agent")
