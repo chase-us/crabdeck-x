@@ -1,0 +1,13 @@
+---
+description: CrabDeck security defaults for gateway auth, CORS, and shell exec
+alwaysApply: true
+globs: ["**/*"]
+---
+
+# CrabDeck security
+
+- Do not default `ENABLE_SHELL_EXEC` to on. Do not add unrestricted shell/RCE helpers.
+- When `GATEWAY_TOKEN` is set, `HELLO` without it stays role `unknown` and cannot route TASK/PROMPT.
+- CORS / WS Origin allow-lists include both `http://localhost:5173` and `http://127.0.0.1:5173` for local operator work.
+- Never commit `.env`, `.env.local`, or `vault/data/`.
+- This workspace is not the Cloudflare origin for hermesclaw.ai. Do not claim a 521 is fixed by a local process.

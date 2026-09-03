@@ -47,3 +47,7 @@ before pointing hermes-claw.ai at a live instance.
   single connected client can hammer Ollama or OpenClaw as fast as it wants.
 - **Don't commit `.env` files.** `.gitignore` excludes them; only
   `.env.example` templates ship in the repo.
+- **Vault token.** `VAULT_TOKEN` (may reuse `GATEWAY_TOKEN`) gates
+  heartbeat/memory/session writes. Leave unset only on localhost.
+- **Vault data.** `vault/data/` is local state — do not commit it. Hash
+  embeddings are not semantic; do not treat vector scores as English similarity.

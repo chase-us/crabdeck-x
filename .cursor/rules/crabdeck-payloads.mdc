@@ -1,0 +1,13 @@
+---
+description: Rigid validation for CrabDeck tool, heartbeat, and vault JSON
+alwaysApply: true
+globs: ["agents/**/*.py", "vault/**/*.py", "gateway/**/*.js"]
+---
+
+# CrabDeck payload hardening
+
+- Treat `msg` and `payload` as untrusted. Non-dicts are wrapped or rejected; never subscript blindly.
+- `TOOL_REQUEST.tool` must be a non-blank string or become `"unknown"`.
+- Heartbeats carry `agent`, `ts` (unix seconds), and `bhive_slot` (`floor(ts/60)`). Node `minuteSlot` uses milliseconds.
+- Vault mutating routes validate allow-listed agents and dict metadata. Slot skew > 1 minute is 400.
+- Fail-open vault ingest (1.5s). A down vault must not break the WebSocket heartbeat ACK.
