@@ -19,6 +19,10 @@ vault/data/
 # Browser verification artifacts
 .playwright-mcp/
 
+# Cloudflare Wrangler local state / secrets
+.wrangler/
+workers/**/.dev.vars
+
 # OS / editor
 .DS_Store
 Thumbs.db

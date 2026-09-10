@@ -63,6 +63,7 @@ python3 -m unittest discover -s vault
 python3 -m unittest discover -s agents
 (cd gateway && npm test)
 (cd ui && npm run build)
+(cd workers/crabdeck-edge && npm test)
 ```
 
 ## Do not
@@ -70,4 +71,4 @@ python3 -m unittest discover -s agents
 - Flip `ENABLE_SHELL_EXEC=1` on an internet-facing host without a tight `SHELL_ALLOWLIST`.
 - Commit `.env` or `vault/data/`.
 - Use `npx convex deploy` for this stack.
-- Assume this checkout can restart Cloudflare. 521 is origin/tunnel, not the event-loop or vault code.
+- Assume this checkout can restart Cloudflare. 521 is origin/tunnel, not the event-loop or vault code. The `workers/crabdeck-edge` Worker only clears 521 after it is deployed as the `hermesclaw.ai` custom domain.

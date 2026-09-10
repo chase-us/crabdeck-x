@@ -23,6 +23,7 @@ python3 -m unittest discover -s vault
 python3 -m unittest discover -s agents
 (cd gateway && npm test)
 (cd ui && npm run build)
+(cd workers/crabdeck-edge && npm test)
 ```
 
 UI changes require a real browser pass (tabs, gateway connect, Telemetry search), not a single screenshot.

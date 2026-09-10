@@ -28,10 +28,15 @@ before pointing hermes-claw.ai at a live instance.
 
 ## What's still on you before going public
 
-- **TLS.** Nothing here terminates TLS. Put the gateway (`ws://`) and
-  orchestrator (`http://`) behind a reverse proxy (nginx/Caddy) doing
-  `wss://` and `https://` on hermes-claw.ai, and only expose that, not the
-  raw ports.
+- **TLS / Cloudflare 521.** Nothing in the local swarm terminates TLS. The
+  `workers/crabdeck-edge` Worker is the intended orange-cloud origin: it
+  answers `GET /` and `GET /health` itself so probes are not 521, streams
+  `/gw` `/vault` `/api` `/ws` to the swarm host, and rate-limits with a
+  Workers Rate Limit binding. Attach it as a custom domain, then point
+  `ORIGIN_URL` at the real swarm (Tunnel/VPS). This repo is not that host.
+  Until the Worker is deployed and routed, `https://hermesclaw.ai/` can
+  still 521. nginx/Caddy on the swarm host remains valid for TLS if you
+  skip Workers.
 - **Token rotation/storage.** `GATEWAY_TOKEN` is a single static shared
   secret distributed to every service's `.env`. That's fine for "only my own
   agents connect," but it is not per-user auth — anyone who gets the token

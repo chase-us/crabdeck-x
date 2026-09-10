@@ -1,0 +1,6 @@
+# Copy to .dev.vars (gitignored). Used by `wrangler dev` and `wrangler types`.
+# Remote: npx wrangler secret put EDGE_TOKEN
+#
+# Leave empty to skip HTTP edge auth (local only). When set, mutating
+# and proxied HTTP routes require Authorization: Bearer <token>.
+EDGE_TOKEN=

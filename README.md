@@ -152,6 +152,9 @@ CrabDeck/
 │   ├── src/Telemetry.jsx          bHive / vault / gateway watch
 │   ├── .env.example
 │   └── .env.local                 (created by installer)
+├── workers/crabdeck-edge/         Cloudflare Worker origin (TLS, rate limit, stream proxy)
+│   ├── wrangler.jsonc
+│   └── src/index.ts
 ├── gateway/
 │   ├── server.js                  WebSocket agent bus (token-authed)
 │   ├── package.json

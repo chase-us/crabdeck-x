@@ -11,6 +11,8 @@ Snapshot after the Shell Cracked + bHive sprint. This is the v2.2 ws-gateway sta
                     │  Telemetry   │
                     └──────┬───────┘
            WS HELLO+token  │  HTTP /vault /gw /api (dev proxies)
+                           │
+           Public https    │  workers/crabdeck-edge (optional CF origin)
                            ▼
                     ┌──────────────┐
                     │   Gateway    │  :8765  Express + WebSocket bus

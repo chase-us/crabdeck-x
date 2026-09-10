@@ -1,0 +1,24 @@
+{
+  "name": "crabdeck-edge",
+  "private": true,
+  "version": "2.2.0",
+  "description": "Cloudflare Worker edge for CrabDeck — TLS, rate limits, streamed origin proxy",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "types": "wrangler types",
+    "test": "vitest run",
+    "typecheck": "wrangler types && tsc --noEmit -p tsconfig.json && tsc --noEmit -p test/tsconfig.json",
+    "check": "npm run typecheck && npm test"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-plugin": "^1.1.6",
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.2",
+    "vitest": "4.1.11",
+    "wrangler": "^4.130.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
