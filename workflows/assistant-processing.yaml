@@ -1,0 +1,36 @@
+name: assistant-processing
+version: 1
+description: "Canonical CrabDeck X assistant processing workflow."
+
+rules:
+  - id: verify-before-execute
+    title: Verify context and parameters
+  - id: ask-dont-guess
+    title: Ask instead of guessing
+  - id: structured-output
+    title: Structured responses
+  - id: error-fallback
+    title: Analyze failures and propose a fallback
+
+tools:
+  - name: dispatch_prompt
+    required_params:
+      - prompt
+    required_context:
+      - gateway_url
+    description: Send a PROMPT event to Hermes via the gateway.
+    fallback: Queue the prompt locally and retry when the gateway is reachable.
+  - name: dispatch_task
+    required_params:
+      - task
+    required_context:
+      - gateway_url
+    description: Send a TASK event to OpenClaw via the gateway.
+    fallback: Hold the task in the workflow queue until OpenClaw heartbeats.
+  - name: tool_request
+    required_params:
+      - tool
+    required_context:
+      - gateway_url
+    description: Route a TOOL_REQUEST through Hermes.
+    fallback: Return needs_input if the tool name is unknown; do not invent one.
