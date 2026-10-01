@@ -1,0 +1,31 @@
+id: hermes-messenger
+version: 1.0.0
+name: Hermes
+description: "LLM messenger and Ollama bridge — relays prompts/responses via CrabDeck Gateway."
+
+team: crabdeck           # Member of Team CrabDeck
+
+gateway:
+  url: ws://localhost:8765
+  client_id: hermes
+  heartbeat_interval_s: 10
+  reconnect_interval_s: 5
+
+ollama:
+  endpoint: http://localhost:11434
+  default_model: llama3
+  fallback_models:
+    - mistral
+    - phi3
+    - codellama
+
+roles:
+  - id: llm_relay
+    desc: "Receives PROMPT events from gateway, queries Ollama, sends HERMES_RESPONSE back"
+    listen_events: [PROMPT]
+    emit_events:   [HERMES_RESPONSE]
+
+  - id: tool_router
+    desc: "Routes tool-use requests to appropriate local or remote models"
+    listen_events: [TOOL_REQUEST]
+    emit_events:   [TOOL_RESULT]
